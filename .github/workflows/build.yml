@@ -1,0 +1,58 @@
+# Builds NetScope.exe and NetScope-Setup.exe on GitHub's Windows machines.
+# - Every push: the files are attached to the run (Actions tab -> run -> Artifacts).
+# - Pushing a tag like v1.0.1 also publishes them as a GitHub Release (Releases page).
+name: Build NetScope
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build NetScope.exe
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name NetScope --icon icon.ico --add-data "icon.ico;."
+          --collect-submodules netscope
+          --collect-all tplinkrouterc6u
+          --collect-submodules keyring --copy-metadata keyring
+          --hidden-import keyring.backends.Windows
+          main.py
+
+      - name: Build NetScope-Setup.exe
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\NetScope.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NetScope-windows
+          path: |
+            dist/NetScope.exe
+            dist/NetScope-Setup.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/NetScope.exe
+            dist/NetScope-Setup.exe

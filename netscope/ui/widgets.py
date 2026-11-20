@@ -1,0 +1,581 @@
+"""Custom widgets: gauge, sparkline, usage rows, collapsible section, toast, spinner."""
+from collections import deque
+
+from PySide6.QtCore import (Property, QEasingCurve, QPointF, QPropertyAnimation, QRectF,
+                            Qt, QTimer, Signal)
+from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
+                               QLineEdit, QPushButton, QSizePolicy, QToolButton,
+                               QVBoxLayout, QWidget)
+
+from ..theme import Palette
+
+# Segoe Fluent Icons / Segoe MDL2 Assets glyphs (built into Windows 10 / 11)
+ICON_FAMILIES = ["Segoe Fluent Icons", "Segoe MDL2 Assets"]
+GLYPH = {
+    "settings": "", "calendar": "", "chart": "", "globe": "",
+    "network": "", "down": "", "up": "", "add": "",
+    "pc": "", "phone": "", "tv": "", "laptop": "",
+    "tablet": "", "other": "", "block": "", "router": "",
+    "arrow_down": "", "arrow_up": "", "check": "", "cancel": "",
+    "search": "", "pie": "", "wifi": "",
+}
+
+
+def icon_font(px: int) -> QFont:
+    f = QFont()
+    f.setFamilies(ICON_FAMILIES)
+    f.setPixelSize(px)
+    return f
+
+
+def icon_css(px: int, extra: str = "") -> str:
+    # widget-level style beats the app-wide `QWidget { font-family … }` rule
+    return f"font-family: 'Segoe Fluent Icons', 'Segoe MDL2 Assets'; font-size: {px}px; {extra}"
+
+
+def icon_label(name: str, size: int = 14, obj: str = "", color: str = "") -> QLabel:
+    lbl = QLabel(GLYPH.get(name, GLYPH["other"]))
+    lbl.setFont(icon_font(size))
+    lbl.setStyleSheet(icon_css(size, f"color: {color};" if color else ""))
+    lbl.setAlignment(Qt.AlignCenter)
+    if obj:
+        lbl.setObjectName(obj)
+    return lbl
+
+
+def icon_button(name: str, size: int = 16) -> QToolButton:
+    b = QToolButton()
+    b.setObjectName("IconBtn")
+    b.setText(GLYPH[name])
+    b.setFont(icon_font(size))
+    b.setStyleSheet(icon_css(size))
+    b.setCursor(Qt.PointingHandCursor)
+    return b
+
+
+def fmt_gb(nbytes: float) -> str:
+    return f"{nbytes / 1024 ** 3:,.2f}"
+
+
+def fmt_speed(bps) -> str:
+    if bps is None:
+        return "—"
+    mbit = bps * 8 / 1_000_000
+    return f"{mbit:,.1f} Mbps" if mbit >= 1 else f"{bps * 8 / 1000:,.0f} Kbps"
+
+
+# ---------------------------------------------------------------------------- Gauge
+class Gauge(QWidget):
+    """240° arc gauge. With a bundle (quota) the arc shows used / quota and changes colour
+    when the bundle is nearly finished."""
+    SPAN = 240
+
+    def __init__(self, palette: Palette, parent=None):
+        super().__init__(parent)
+        self.p = palette
+        self.caption = ""
+        self.subcaption = ""
+        self.quota_gb = 0.0
+        self._value = 0.0
+        self.target = 0.0
+        self.setMinimumSize(300, 250)
+        self.anim = QPropertyAnimation(self, b"value", self)
+        self.anim.setDuration(1100)
+        self.anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def getValue(self):
+        return self._value
+
+    def setValue(self, v):
+        self._value = v
+        self.update()
+
+    value = Property(float, getValue, setValue)
+
+    def animate_to(self, gb: float):
+        if abs(gb - self.target) < 1e-6 and self.anim.state() != QPropertyAnimation.Running:
+            return
+        self.target = gb
+        self.anim.stop()
+        self.anim.setStartValue(self._value)
+        self.anim.setEndValue(gb)
+        self.anim.start()
+
+    @staticmethod
+    def auto_max(v: float) -> float:
+        for step in (10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000):
+            if v * 1.25 <= step:
+                return step
+        return v * 1.25
+
+    def fill_color(self, frac: float) -> QColor:
+        if self.quota_gb > 0 and frac >= 0.95:
+            return QColor(self.p.danger)
+        if self.quota_gb > 0 and frac >= 0.8:
+            return QColor(self.p.warn)
+        return QColor(self.p.accent)
+
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        thick = max(16, min(w, h) * 0.075)
+        side = min(w - 20, h * 1.3) - thick
+        rect = QRectF((w - side) / 2, thick / 2 + 6, side, side)
+        start = 90 + self.SPAN / 2
+
+        pen = QPen(QColor(self.p.track), thick, Qt.SolidLine, Qt.RoundCap)
+        qp.setPen(pen)
+        qp.drawArc(rect, int(start * 16), int(-self.SPAN * 16))
+
+        scale = self.quota_gb if self.quota_gb > 0 else self.auto_max(max(self.target, 0.01))
+        frac = min(1.0, self._value / scale) if scale else 0
+        if frac > 0.002:
+            col = self.fill_color(frac)
+            grad = QLinearGradient(rect.topLeft(), rect.topRight())
+            grad.setColorAt(0, col.darker(125))
+            grad.setColorAt(1, col)
+            pen.setBrush(grad)
+            qp.setPen(pen)
+            qp.drawArc(rect, int(start * 16), int(-self.SPAN * frac * 16))
+
+        cy = rect.center().y()
+        qp.setPen(QColor(self.p.text))
+        f = QFont("Segoe UI", 1, QFont.Bold)
+        f.setPixelSize(int(side * 0.2))
+        qp.setFont(f)
+        qp.drawText(QRectF(0, cy - side * 0.19, w, side * 0.24), Qt.AlignCenter, f"{self._value:,.2f}")
+        f2 = QFont("Segoe UI")
+        f2.setPixelSize(max(12, int(side * 0.065)))
+        qp.setFont(f2)
+        qp.setPen(QColor(self.p.subtext))
+        qp.drawText(QRectF(0, cy + side * 0.06, w, side * 0.09), Qt.AlignCenter, self.caption)
+        if self.subcaption:
+            f3 = QFont("Segoe UI", 1, QFont.DemiBold)
+            f3.setPixelSize(max(11, int(side * 0.05)))
+            qp.setFont(f3)
+            qp.setPen(self.fill_color(frac) if self.quota_gb else QColor(self.p.subtext))
+            qp.drawText(QRectF(0, cy + side * 0.16, w, side * 0.08), Qt.AlignCenter, self.subcaption)
+
+
+# ---------------------------------------------------------------------------- Sparkline
+class Sparkline(QWidget):
+    def __init__(self, palette: Palette, color: str = "", points: int = 40):
+        super().__init__()
+        self.p = palette
+        self.color = QColor(color or palette.accent)
+        self.data = deque([0.0] * points, maxlen=points)
+        self.setMinimumHeight(34)
+
+    def push(self, v):
+        self.data.append(float(v or 0))
+        self.update()
+
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height() - 2
+        top = max(self.data) or 1
+        n = len(self.data) - 1
+        pts = [QPointF(i * w / n, 1 + h - v / top * (h - 2)) for i, v in enumerate(self.data)]
+        line = QPainterPath(pts[0])
+        for pt in pts[1:]:
+            line.lineTo(pt)
+        area = QPainterPath(line)
+        area.lineTo(w, h + 1)
+        area.lineTo(0, h + 1)
+        grad = QLinearGradient(0, 0, 0, h)
+        c1 = QColor(self.color)
+        c1.setAlpha(90)
+        c2 = QColor(self.color)
+        c2.setAlpha(0)
+        grad.setColorAt(0, c1)
+        grad.setColorAt(1, c2)
+        qp.fillPath(area, grad)
+        qp.setPen(QPen(self.color, 1.8))
+        qp.drawPath(line)
+
+
+class SpeedTile(QFrame):
+    def __init__(self, palette: Palette, title: str, glyph: str, color: str = ""):
+        super().__init__()
+        self.setObjectName("Tile")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 10, 12, 8)
+        v.setSpacing(2)
+        top = QHBoxLayout()
+        ic = icon_label(glyph, 12, color=color or palette.accent)
+        top.addWidget(ic)
+        t = QLabel(title)
+        t.setObjectName("Muted")
+        top.addWidget(t)
+        top.addStretch(1)
+        v.addLayout(top)
+        self.value = QLabel("—")
+        self.value.setObjectName("TileValue")
+        v.addWidget(self.value)
+        self.spark = Sparkline(palette, color)
+        v.addWidget(self.spark)
+
+    def set_speed(self, bps):
+        self.value.setText(fmt_speed(bps))
+        self.spark.push(bps)
+
+
+# ---------------------------------------------------------------------------- Bar
+class Bar(QWidget):
+    def __init__(self, palette: Palette, parent=None):
+        super().__init__(parent)
+        self.p = palette
+        self._frac = 0.0
+        self.dim = False
+        self.setFixedHeight(4)
+        self.anim = QPropertyAnimation(self, b"frac", self)
+        self.anim.setDuration(700)
+        self.anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def getFrac(self):
+        return self._frac
+
+    def setFrac(self, v):
+        self._frac = v
+        self.update()
+
+    frac = Property(float, getFrac, setFrac)
+
+    def animate_to(self, f: float):
+        f = max(0.0, min(1.0, f))
+        if abs(f - self._frac) < 1e-4:
+            return
+        self.anim.stop()
+        self.anim.setStartValue(self._frac)
+        self.anim.setEndValue(f)
+        self.anim.start()
+
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        r = self.rect()
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(QColor(self.p.track))
+        qp.drawRoundedRect(r, 2, 2)
+        if self._frac > 0:
+            fw = max(4.0, r.width() * self._frac)
+            x = r.width() - fw if self.layoutDirection() == Qt.RightToLeft else 0
+            qp.setBrush(QColor(self.p.subtext if self.dim else self.p.accent))
+            qp.drawRoundedRect(QRectF(x, 0, fw, r.height()), 2, 2)
+
+
+# ---------------------------------------------------------------------------- Row
+class UsageRow(QFrame):
+    """Name side: icon, name, sub-line. Other side: usage. Thin bar underneath."""
+    context = Signal(str, object)     # key, global pos
+    activated = Signal(str)           # double click
+
+    def __init__(self, key: str, palette: Palette, icon: str = ""):
+        super().__init__()
+        self.key = key
+        self.p = palette
+        self.setObjectName("Row")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(lambda pos: self.context.emit(self.key, self.mapToGlobal(pos)))
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(10, 8, 10, 8)
+        v.setSpacing(6)
+        top = QHBoxLayout()
+        top.setSpacing(10)
+        self.icon = None
+        if icon:
+            self.icon = icon_label(icon, 15, "IconTile")
+            self.icon.setFixedSize(32, 32)
+            top.addWidget(self.icon)
+        self.idx = QLabel()
+        self.idx.setObjectName("Muted")
+        self.idx.hide()
+        top.addWidget(self.idx)
+        names = QVBoxLayout()
+        names.setSpacing(0)
+        nrow = QHBoxLayout()
+        nrow.setSpacing(6)
+        self.name = QLabel()
+        self.name.setStyleSheet("font-size: 13px; font-weight: 600;")
+        nrow.addWidget(self.name)
+        self.dot = QLabel("●")
+        self.dot.setStyleSheet("font-size: 8px;")
+        self.dot.hide()
+        nrow.addWidget(self.dot)
+        nrow.addStretch(1)
+        names.addLayout(nrow)
+        self.sub = QLabel()
+        self.sub.setObjectName("Muted")
+        names.addWidget(self.sub)
+        top.addLayout(names, 1)
+        self.chip = QLabel()
+        self.chip.setObjectName("Badge")
+        self.chip.hide()
+        top.addWidget(self.chip)
+        self.usage = QLabel()
+        self.usage.setStyleSheet("font-size: 13px; font-weight: 600;")
+        top.addWidget(self.usage)
+        v.addLayout(top)
+        self.bar = Bar(palette)
+        v.addWidget(self.bar)
+
+        self.fx = QGraphicsOpacityEffect(self)
+        self.fx.setOpacity(1.0)
+        self.setGraphicsEffect(self.fx)
+
+    def mouseDoubleClickEvent(self, e):
+        self.activated.emit(self.key)
+
+    def set_data(self, name, sub, nbytes, frac, blocked, blocked_text, index="", online=None):
+        self.idx.setText(index)
+        self.idx.setVisible(bool(index))
+        self.name.setText(name)
+        self.sub.setText(sub)
+        self.sub.setVisible(bool(sub))
+        if online is None:
+            self.dot.hide()
+        else:
+            self.dot.show()
+            self.dot.setStyleSheet(f"font-size: 8px; color: {self.p.success if online else self.p.track};")
+        self.usage.setText(f"{fmt_gb(nbytes)} GB" if nbytes is not None else "")
+        self.bar.setVisible(nbytes is not None)
+        self.chip.setText(blocked_text)
+        self.chip.setVisible(blocked)
+        self.bar.dim = blocked
+        if nbytes is not None:
+            self.bar.animate_to(frac)
+        self.fx.setOpacity(0.4 if blocked else (0.62 if online is False else 1.0))
+
+
+# ---------------------------------------------------------------------------- Section
+class CollapsibleSection(QFrame):
+    toggled = Signal(bool)
+
+    def __init__(self, title: str, icon: str, palette: Palette, badge: str = "", open_=True,
+                 search_placeholder: str = ""):
+        super().__init__()
+        self.setObjectName("Card")
+        self.p = palette
+        self.is_open = open_
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 8, 10, 10)
+        outer.setSpacing(4)
+
+        self.header = QFrame()
+        self.header.setObjectName("SectionHeader")
+        self.header.setCursor(Qt.PointingHandCursor)
+        h = QHBoxLayout(self.header)
+        h.setContentsMargins(8, 8, 8, 8)
+        ic = icon_label(icon, 16, color=palette.accent)
+        h.addWidget(ic)
+        t = QLabel(title)
+        t.setObjectName("SectionTitle")
+        h.addWidget(t)
+        h.addStretch(1)
+        self.extra = QHBoxLayout()
+        h.addLayout(self.extra)
+        self.badge = QLabel(badge)
+        self.badge.setObjectName("Badge")
+        h.addWidget(self.badge)
+        self.chev = icon_label("up" if open_ else "down", 12)
+        h.addWidget(self.chev)
+        self.header.mousePressEvent = lambda e: self.toggle()
+        outer.addWidget(self.header)
+
+        self.body = QWidget()
+        self.body.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        bl = QVBoxLayout(self.body)
+        self.body_layout = bl
+        bl.setContentsMargins(0, 4, 0, 0)
+        bl.setSpacing(4)
+        self.search = None
+        if search_placeholder:
+            self.search = QLineEdit()
+            self.search.setObjectName("Search")
+            self.search.setPlaceholderText(search_placeholder)
+            self.search.setClearButtonEnabled(True)
+            bl.addWidget(self.search)
+        self.list_w = QWidget()
+        self.list = QVBoxLayout(self.list_w)
+        self.list.setContentsMargins(0, 0, 0, 0)
+        self.list.setSpacing(2)
+        bl.addWidget(self.list_w)
+        self.empty = QLabel()
+        self.empty.setObjectName("Muted")
+        self.empty.setWordWrap(True)
+        self.empty.setAlignment(Qt.AlignCenter)
+        self.empty.setContentsMargins(10, 18, 10, 18)
+        self.empty.setTextFormat(Qt.RichText)
+        self.empty.setOpenExternalLinks(True)
+        self.empty.hide()
+        bl.addWidget(self.empty)
+        self.action_btn = QPushButton()
+        self.action_btn.setObjectName("Primary")
+        self.action_btn.setCursor(Qt.PointingHandCursor)
+        self.action_btn.hide()
+        bl.addWidget(self.action_btn, 0, Qt.AlignHCenter)
+        outer.addWidget(self.body)
+
+        self.anim = QPropertyAnimation(self.body, b"maximumHeight", self)
+        self.anim.setDuration(320)
+        self.anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self.anim.finished.connect(self._unlock)
+        self.body.setMaximumHeight(16777215 if open_ else 0)
+        self.rows = {}
+
+    def toggle(self):
+        self.is_open = not self.is_open
+        self.chev.setText(GLYPH["up" if self.is_open else "down"])
+        self.anim.stop()
+        self.anim.setStartValue(self.body.height() if self.body.maximumHeight() else 0)
+        self.anim.setEndValue(self.body.sizeHint().height() if self.is_open else 0)
+        self.anim.start()
+        self.toggled.emit(self.is_open)
+
+    def _unlock(self):
+        if self.is_open:
+            self.body.setMaximumHeight(16777215)
+
+    def set_empty(self, text: str, action: str = ""):
+        self.empty.setText(text.replace("\n", "<br>"))
+        self.empty.setVisible(bool(text))
+        self.action_btn.setText(action)
+        self.action_btn.setVisible(bool(action))
+
+    def add_top(self, widget: QWidget):
+        self.body_layout.insertWidget(0, widget)
+
+    def set_rows(self, ordered_keys, factory):
+        """Reuse row widgets, create new ones, remove stale ones, keep the order."""
+        for k in list(self.rows):
+            if k not in ordered_keys:
+                self.rows.pop(k).deleteLater()
+        for k in ordered_keys:
+            if k not in self.rows:
+                self.rows[k] = factory(k)
+        while self.list.count():
+            self.list.takeAt(0)
+        for k in ordered_keys:
+            self.list.addWidget(self.rows[k])
+
+
+# ---------------------------------------------------------------------------- Segmented
+class Segmented(QFrame):
+    """Two (or more) pill buttons; emits the key of the selected one."""
+    changed = Signal(str)
+
+    def __init__(self, items, current: str):
+        super().__init__()
+        self.setObjectName("Seg")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(3, 3, 3, 3)
+        lay.setSpacing(3)
+        self.buttons = {}
+        for key, text in items:
+            b = QPushButton(text)
+            b.setObjectName("SegBtn")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setChecked(key == current)
+            b.clicked.connect(lambda _=False, k=key: self.select(k))
+            lay.addWidget(b, 1)
+            self.buttons[key] = b
+        self.current = current
+
+    def select(self, key: str):
+        for k, b in self.buttons.items():
+            b.setChecked(k == key)
+        if key != self.current:
+            self.current = key
+            self.changed.emit(key)
+
+
+# ---------------------------------------------------------------------------- Toast
+class Toast(QFrame):
+    """Small message that slides in at the bottom, with an optional action (e.g. Undo)."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setObjectName("Toast")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(16, 10, 8, 10)
+        self.text = QLabel()
+        lay.addWidget(self.text, 1)
+        self.btn = QPushButton()
+        self.btn.setObjectName("ToastBtn")
+        self.btn.setCursor(Qt.PointingHandCursor)
+        lay.addWidget(self.btn)
+        self.fx = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.fx)
+        self.fade = QPropertyAnimation(self.fx, b"opacity", self)
+        self.fade.setDuration(220)
+        self.timer = QTimer(self, singleShot=True)
+        self.timer.timeout.connect(self.dismiss)
+        self._cb = None
+        self.btn.clicked.connect(self._action)
+        self.hide()
+
+    def show_message(self, text: str, action: str = "", callback=None, error=False, ms=5000):
+        self.setObjectName("ToastErr" if error else "Toast")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.text.setText(text)
+        self.btn.setText(action)
+        self.btn.setVisible(bool(action))
+        self._cb = callback
+        self.adjustSize()
+        self.reposition()
+        self.show()
+        self.raise_()
+        self.fade.stop()
+        self.fade.setStartValue(0.0)
+        self.fade.setEndValue(1.0)
+        self.fade.start()
+        self.timer.start(ms)
+
+    def reposition(self):
+        par = self.parentWidget()
+        w = min(460, par.width() - 40)
+        self.setFixedWidth(w)
+        self.adjustSize()
+        self.move((par.width() - w) // 2, par.height() - self.height() - 24)
+
+    def _action(self):
+        cb, self._cb = self._cb, None
+        self.dismiss()
+        if cb:
+            cb()
+
+    def dismiss(self):
+        self.timer.stop()
+        self.hide()
+
+
+# ---------------------------------------------------------------------------- Spinner
+class Spinner(QWidget):
+    def __init__(self, palette: Palette, size: int = 46):
+        super().__init__()
+        self.p = palette
+        self.angle = 0
+        self.setFixedSize(size, size)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(16)
+
+    def _tick(self):
+        self.angle = (self.angle + 6) % 360
+        self.update()
+
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(4, 4, self.width() - 8, self.height() - 8)
+        qp.setPen(QPen(QColor(self.p.track), 4))
+        qp.drawEllipse(r)
+        qp.setPen(QPen(QColor(self.p.accent), 4, Qt.SolidLine, Qt.RoundCap))
+        qp.drawArc(r, -self.angle * 16, 100 * 16)
