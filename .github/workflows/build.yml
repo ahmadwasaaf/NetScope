@@ -1,12 +1,14 @@
 # Builds NetScope.exe and NetScope-Setup.exe on GitHub's Windows machines.
 # - Every push: the files are attached to the run (Actions tab -> run -> Artifacts).
-# - Pushing a tag like v1.0.1 also publishes them as a GitHub Release (Releases page).
+# - Publishing a release (or pushing a tag like v1.0.1) attaches them to that release.
 name: Build NetScope
 
 on:
   push:
     branches: [main]
     tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
