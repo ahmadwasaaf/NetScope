@@ -228,13 +228,13 @@ class Waves(QWidget):
         qp = QPainter(self)
         qp.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        mid = h * 0.58
+        mid = h * 0.55
         col = self._mix()
         t, lv = self.t, self.level
         layers = (  # (amplitude, wavelength px, speed, alpha, pen width)
-            (0.30, 150, 2.6, 70, 0.0),
-            (0.22, 95, -1.9, 55, 0.0),
-            (0.34, 120, 3.4, 255, 1.8),
+            (0.40, 150, 2.8, 80, 0.0),
+            (0.30, 95, -2.1, 65, 0.0),
+            (0.44, 120, 3.6, 255, 1.8),
         )
         step = 3
         for amp, wl, sp, alpha, pen_w in layers:
