@@ -305,6 +305,7 @@ class UsageRow(QFrame):
         self.key = key
         self.p = palette
         self.setObjectName("Row")
+        self.setAttribute(Qt.WA_Hover, True)
         self.setCursor(Qt.PointingHandCursor)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(lambda pos: self.context.emit(self.key, self.mapToGlobal(pos)))
@@ -554,6 +555,7 @@ class DeviceCard(QFrame):
         self.header.mousePressEvent = lambda e: self.toggle() if e.button() == Qt.LeftButton else None
         self.header.mouseDoubleClickEvent = lambda e: self.activated.emit(self.key)
         self.header.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.header.setAttribute(Qt.WA_Hover, True)          # QFrame needs this for :hover styles
         outer.addWidget(self.header)
 
         self.body = QWidget()

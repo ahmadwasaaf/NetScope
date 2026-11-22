@@ -65,7 +65,7 @@ def stylesheet(p: Palette) -> str:
     QToolButton#IconBtn:hover {{ color: {p.accent}; }}
     #SectionHeader:hover {{ background: {p.hover}; border-radius: 12px; }}
     #Row {{ border-radius: 10px; }}
-    #Row:hover {{ background: {p.hover}; }}
+    #Row:hover {{ background: {p.accent_soft(30)}; }}
     QMenu {{ background: {p.card}; border: 1px solid {p.border}; border-radius: 10px; padding: 6px; }}
     QMenu::item {{ padding: 7px 22px; border-radius: 6px; }}
     QMenu::item:selected {{ background: {p.accent_soft(60)}; color: {p.text}; }}
@@ -85,7 +85,7 @@ def stylesheet(p: Palette) -> str:
         selection-color: white; }}
     #DevCard {{ background: transparent; border: 1px solid {p.border}; border-radius: 14px; }}
     #DevHeader {{ border-radius: 14px; }}
-    #DevHeader:hover {{ background: {p.hover}; }}
+    #DevHeader:hover {{ background: {p.accent_soft(38)}; border: 1px solid {p.accent}; }}
     #VSep {{ background: {p.border}; min-height: 30px; max-height: 30px; }}
     #DevName {{ font-size: 15px; font-weight: 600; }}
     #DevUsage {{ font-size: 15px; font-weight: 700; }}
