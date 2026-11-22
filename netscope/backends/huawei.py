@@ -561,7 +561,8 @@ class HuaweiBackend(RouterBackend):
             name = (alias if alias and alias != "--" else "") or _field(d, "HostName", "DevName") or mac
             ip = _field(d, "IpAddr", "IPAddr", "Ip")
             status = _field(d, "DevStatus", "Status").lower()
-            snap.devices.append(Device(mac, name, ip, guess_type(name), status in ("", "online", "1")))
+            hint = _field(d, "UserSpecifiedDeviceType") or _field(d, "DeviceType") or _field(d, "DevType")
+            snap.devices.append(Device(mac, name, ip, guess_type(name, mac, hint), status in ("", "online", "1")))
         self._last_devices = [d for d in snap.devices if d.online]
         # filter pages are big (20-70 KB) for a small router CPU: read them once a minute
         last = getattr(self, "_heavy_at", None)

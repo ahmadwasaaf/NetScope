@@ -113,19 +113,34 @@ class RouterBackend(ABC):
         pass
 
 
-def guess_type(name: str) -> str:
+def guess_type(name: str, mac: str = "", hint: str = "") -> str:
+    """pc | laptop | phone | tablet | tv | other – from the router's own device type when it
+    gives one, then the host name, then the MAC (phones use random 'private' MACs)."""
+    h = (hint or "").lower()
+    for keys, kind in ((("phone", "mobile", "android", "ios", "smartphone"), "phone"),
+                       (("pad", "tablet"), "tablet"),
+                       (("tv", "stb", "settop", "set-top", "box"), "tv"),
+                       (("laptop", "notebook"), "laptop"),
+                       (("pc", "computer", "desktop", "windows"), "pc")):
+        if any(k in h for k in keys):
+            return kind
     n = (name or "").lower()
-    if any(k in n for k in ("iphone", "android", "galaxy", "redmi", "pixel", "phone", "huawei",
-                            "oppo", "vivo", "realme", "xiaomi", "honor", "infinix", "tecno")):
+    if re.search(r"iphone|android|galaxy|redmi|xiaomi|poco|pixel|huawei|honor|oppo|vivo|realme|"
+                 r"infinix|tecno|itel|nokia|motorola|oneplus|phone|mate|nova|\b[asmz]\d{2,3}\b|sm-", n):
         return "phone"
-    if any(k in n for k in ("tv", "bravia", "roku", "chromecast", "firetv", "webos", "tizen", "shield")):
-        return "tv"
-    if any(k in n for k in ("ipad", "tab")):
+    if re.search(r"ipad|\btab|tablet", n):
         return "tablet"
-    if any(k in n for k in ("laptop", "macbook", "notebook", "thinkpad", "book")):
+    if re.search(r"\btv\b|-tv|tv-|bravia|roku|chromecast|firetv|fire-tv|webos|tizen|shield|android-tv|smarttv", n):
+        return "tv"
+    if re.search(r"laptop|macbook|notebook|thinkpad|ideapad|vivobook|zenbook|pavilion|inspiron|latitude", n):
         return "laptop"
-    if any(k in n for k in ("desktop", "pc", "win", "imac")):
+    if re.search(r"desktop|\bpc\b|-pc|imac|workstation", n):
         return "pc"
+    try:
+        if int(mac.replace("-", ":").split(":")[0], 16) & 0x02:   # locally administered = private Wi-Fi MAC
+            return "phone"
+    except (ValueError, IndexError):
+        pass
     return "other"
 
 

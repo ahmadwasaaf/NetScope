@@ -248,6 +248,7 @@ class MainWindow(QMainWindow):
         col.addStretch(1)
 
         self.cards = {}
+        self.dev_cards = {}
         self.toast = Toast(root)
         self._refresh_view()
 
@@ -471,6 +472,10 @@ class MainWindow(QMainWindow):
                 return mac
         return None
 
+    GROUPS = [("pc", "grp_pc"), ("phone", "grp_phone"), ("tv", "grp_tv"),
+              ("laptop", "grp_laptop"), ("tablet", "grp_tablet"), ("other", "grp_other")]
+    ALWAYS = ("pc", "phone", "tv", "laptop")          # shown even when empty
+
     def _refresh_devices(self):
         tr, start, caps = self.tr, self.s.start, self.caps
         meta = self.store.device_meta()
@@ -480,6 +485,7 @@ class MainWindow(QMainWindow):
         dns_sites = self.store.totals("devsite", start)
         pc_mac = self._this_pc_mac(meta, live)
         has_dev_usage = Cap.DEVICE_USAGE in caps
+        group_ids = [g for g, _ in self.GROUPS]
 
         macs = {m for m in set(dev_tot) | set(live) | self.blocked_macs if m in meta}
         if pc_mac:
@@ -494,35 +500,67 @@ class MainWindow(QMainWindow):
                 return sum(pc_sites.values())
             return dev_tot.get(m, 0) if has_dev_usage else 0
 
-        is_on = lambda m: (m in live and live[m].online) or m == pc_mac
-        offline = [m for m in macs if not is_on(m) and m not in self.blocked_macs]
-        if not self.s.show_offline:
-            macs = macs - set(offline)
-        self.offline_btn.setText(tr("hide_offline") if self.s.show_offline
-                                 else tr("show_offline", n=len(offline)))
-        self.offline_btn.setVisible(bool(offline))
-        order = sorted(macs, key=lambda m: (m in self.blocked_macs, m != pc_mac, not is_on(m), -usage(m),
-                                            self._display_name(m, meta.get(m, ("",))[0]).lower()))
-        keys = list(order)
-        if Cap.SITE_BLOCK in caps and self.blocked_domains:
-            keys.append(BLOCKED_KEY)
-        self._sync_cards(keys, meta)
+        def kind(m):
+            t = live[m].dtype if m in live else meta.get(m, ("", "", "other"))[2]
+            return t if t in group_ids else "other"
 
-        for m in order:
-            name, ip, _ = meta.get(m, ("", "", ""))
-            card = self.cards[m]
-            label = self._display_name(m, name)
-            sub = ip
-            if m == pc_mac:
-                label = f"{label}  ·  {tr('this_pc')}"
-            elif label == tr("unknown_device"):
-                sub = f"{ip} · {m.upper()}"
-            u = usage(m)
-            usage_text = fmt_size(u) if (u and (m == pc_mac or has_dev_usage)) else ""
-            card.set_header(label, sub, is_on(m), tr("online") if is_on(m) else tr("offline_dev"),
-                            usage_text, m in self.blocked_macs, tr("blocked"))
-            if card.is_open:
-                self._fill_sites(card, m, m == pc_mac, pc_sites, dns_sites)
+        is_on = lambda m: (m in live and live[m].online) or m == pc_mac
+        groups = {g: [] for g in group_ids}
+        for m in macs:
+            groups[kind(m)].append(m)
+        for g in groups.values():
+            g.sort(key=lambda m: (m in self.blocked_macs, m != pc_mac, not is_on(m), -usage(m),
+                                  self._display_name(m, meta.get(m, ("",))[0]).lower()))
+
+        # ---- top level: one card per device type (+ blocked websites)
+        top = [f"grp:{g}" for g in group_ids if groups[g] or (g in self.ALWAYS and not query)]
+        if Cap.SITE_BLOCK in caps and self.blocked_domains:
+            top.append(BLOCKED_KEY)
+        self._sync_cards(top)
+
+        # ---- device cards live inside their type card
+        for m in macs:
+            if m not in self.dev_cards:
+                card = DeviceCard(m, self.p, kind(m) if kind(m) in GLYPH else "other",
+                                  open_=m in self.open_devices)
+                card.toggled.connect(self._card_toggled)
+                card.site_context.connect(self._site_menu)
+                card.action.connect(self._card_action)
+                card.context.connect(self._device_menu)
+                card.activated.connect(self._rename)
+                self.dev_cards[m] = card
+        for m in list(self.dev_cards):
+            if m not in macs:
+                self.dev_cards.pop(m).deleteLater()
+
+        for g, label_key in self.GROUPS:
+            key = f"grp:{g}"
+            if key not in self.cards:
+                continue
+            members = groups[g]
+            online_n = sum(1 for m in members if is_on(m))
+            total = sum(usage(m) for m in members)
+            sub = tr("grp_count", n=len(members), o=online_n) if members else tr("grp_none")
+            self.cards[key].set_header(tr(label_key), sub, online_n > 0,
+                                       tr("online") if online_n else tr("offline_dev"),
+                                       fmt_size(total) if total else "", False, "")
+            self.cards[key].set_children([self.dev_cards[m] for m in members],
+                                         "" if members else tr("grp_empty"))
+            for m in members:
+                name, ip, _ = meta.get(m, ("", "", ""))
+                card = self.dev_cards[m]
+                label = self._display_name(m, name)
+                dsub = ip
+                if m == pc_mac:
+                    label = f"{label}  ·  {tr('this_pc')}"
+                elif label == tr("unknown_device"):
+                    dsub = f"{ip} · {m.upper()}"
+                u = usage(m)
+                card.set_header(label, dsub, is_on(m), tr("online") if is_on(m) else tr("offline_dev"),
+                                fmt_size(u) if (u and (m == pc_mac or has_dev_usage)) else "",
+                                m in self.blocked_macs, tr("blocked"))
+                if card.is_open:
+                    self._fill_sites(card, m, m == pc_mac, pc_sites, dns_sites)
 
         if BLOCKED_KEY in self.cards:
             card = self.cards[BLOCKED_KEY]
@@ -531,27 +569,21 @@ class MainWindow(QMainWindow):
                 items = [(d, d, None, 0, True, tr("blocked"), f"{i:02d}")
                          for i, d in enumerate(sorted(self.blocked_domains), 1)]
                 card.set_sites(items)
-        self.dev_section.badge.setText(f"{len(order) + (0 if self.s.show_offline else len(offline))}  {tr('devices_word')}")
-        self.dev_section.set_empty("" if order or not self.connected_once else tr("no_data"))
+        online_total = sum(1 for m in macs if is_on(m))
+        self.dev_section.badge.setText(f"{online_total}/{len(macs)}  {tr('devices_word')}")
+        self.offline_btn.hide()
+        self.dev_section.set_empty("")
 
-    def _sync_cards(self, keys, meta):
+    def _sync_cards(self, keys):
         for k in list(self.cards):
             if k not in keys:
                 self.cards.pop(k).deleteLater()
         for k in keys:
             if k not in self.cards:
-                if k == BLOCKED_KEY:
-                    icon = "block"
-                else:
-                    t = meta.get(k, ("", "", "other"))[2]
-                    icon = t if t in GLYPH else "other"
+                icon = "block" if k == BLOCKED_KEY else (k[4:] if k[4:] in GLYPH else "other")
                 card = DeviceCard(k, self.p, icon, open_=k in self.open_devices)
                 card.toggled.connect(self._card_toggled)
                 card.site_context.connect(self._site_menu)
-                card.action.connect(self._card_action)
-                if k != BLOCKED_KEY:
-                    card.context.connect(self._device_menu)
-                    card.activated.connect(self._rename)
                 self.cards[k] = card
         if keys == self._card_order:
             return

@@ -617,6 +617,19 @@ class DeviceCard(QFrame):
             self.name.setStyleSheet(f"color: {col};")
             self.usage.setStyleSheet(f"color: {col};")
 
+    def set_children(self, widgets, empty_text=""):
+        """Put other cards (the devices of a type group) inside this card."""
+        ids = [id(w) for w in widgets]
+        if ids != getattr(self, "_child_ids", None):
+            self._child_ids = ids
+            while self.sites.count():
+                self.sites.takeAt(0)
+            for w in widgets:
+                self.sites.addWidget(w)
+        self.empty.setText(empty_text)
+        self.empty.setVisible(bool(empty_text))
+        self.action_btn.hide()
+
     def set_sites(self, items, empty_text="", action_text=""):
         """items: [(key, label, bytes_or_None, frac, blocked, blocked_text, index)]"""
         keys = [i[0] for i in items]
