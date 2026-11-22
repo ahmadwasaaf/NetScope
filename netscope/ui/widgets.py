@@ -351,9 +351,7 @@ class UsageRow(QFrame):
         self.bar = Bar(palette)
         v.addWidget(self.bar)
 
-        self.fx = QGraphicsOpacityEffect(self)
-        self.fx.setOpacity(1.0)
-        self.setGraphicsEffect(self.fx)
+        self._dim = None
 
     def mouseDoubleClickEvent(self, e):
         self.activated.emit(self.key)
@@ -376,7 +374,12 @@ class UsageRow(QFrame):
         self.bar.dim = blocked
         if nbytes is not None:
             self.bar.animate_to(frac)
-        self.fx.setOpacity(0.4 if blocked else (0.62 if online is False else 1.0))
+        dim = blocked or online is False
+        if dim != self._dim:                      # restyle only when it changes
+            self._dim = dim
+            col = self.p.subtext if dim else self.p.text
+            self.name.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {col};")
+            self.usage.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {col};")
 
 
 # ---------------------------------------------------------------------------- Section
@@ -581,9 +584,7 @@ class DeviceCard(QFrame):
         outer.addWidget(self.body)
         self.body.setVisible(open_)
         self.rows = {}
-        self.fx = QGraphicsOpacityEffect(self)
-        self.fx.setOpacity(1.0)
-        self.setGraphicsEffect(self.fx)
+        self._dim = None
 
     def toggle(self):
         self.is_open = not self.is_open
@@ -599,15 +600,22 @@ class DeviceCard(QFrame):
             self.pill.hide()
         else:
             self.pill.show()
-            self.pill.setObjectName("OnPill" if online else "OffPill")
+            name = "OnPill" if online else "OffPill"
+            if self.pill.objectName() != name:
+                self.pill.setObjectName(name)
+                self.pill.style().unpolish(self.pill)
+                self.pill.style().polish(self.pill)
             self.pill.setText(f"●  {status_text}")
-            self.pill.style().unpolish(self.pill)
-            self.pill.style().polish(self.pill)
         self.usage.setText(usage_text)
         self.usage.setVisible(bool(usage_text))
         self.chip.setText(blocked_text)
         self.chip.setVisible(blocked)
-        self.fx.setOpacity(0.45 if blocked else (0.7 if online is False else 1.0))
+        dim = blocked or online is False
+        if dim != self._dim:
+            self._dim = dim
+            col = self.p.subtext if dim else self.p.text
+            self.name.setStyleSheet(f"color: {col};")
+            self.usage.setStyleSheet(f"color: {col};")
 
     def set_sites(self, items, empty_text="", action_text=""):
         """items: [(key, label, bytes_or_None, frac, blocked, blocked_text, index)]"""

@@ -76,6 +76,11 @@ class MainWindow(QMainWindow):
     def __init__(self, start_hidden: bool = False):
         super().__init__()
         self.s = Settings.load()
+        if self.s.ui_version < 2:
+            self.s.devices_open = self.s.router_open = True
+            self.s.dns_monitor = True
+            self.s.ui_version = 2
+            self.s.save()
         self.poller = None
         self.snap = Snapshot(online=False)
         self.connected_once = False
@@ -209,6 +214,14 @@ class MainWindow(QMainWindow):
         rv.addWidget(works)
         self.caps_holder = QVBoxLayout()
         rv.addLayout(self.caps_holder)
+        self.dns_info = QLabel()
+        self.dns_info.setObjectName("Muted")
+        self.dns_info.setWordWrap(True)
+        self.dns_info.setTextFormat(Qt.RichText)
+        self.dns_info.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.dns_info.setMinimumWidth(10)
+        rv.addSpacing(6)
+        rv.addWidget(self.dns_info)
         self._caps_shown = None
         self.router_section.list.addWidget(self.router_box)
         col.addWidget(self.router_section)
@@ -225,6 +238,12 @@ class MainWindow(QMainWindow):
         self.add_site_btn.clicked.connect(self._add_site)
         self.dev_section.extra.addWidget(self.add_site_btn)
         self.dev_section.list.setSpacing(8)
+        self.offline_btn = QPushButton()
+        self.offline_btn.setObjectName("Ghost")
+        self.offline_btn.setCursor(Qt.PointingHandCursor)
+        self.offline_btn.clicked.connect(self._toggle_offline)
+        self.dev_section.body_layout.addWidget(self.offline_btn)
+        self._card_order = None
         col.addWidget(self.dev_section)
         col.addStretch(1)
 
@@ -418,6 +437,25 @@ class MainWindow(QMainWindow):
                     w.deleteLater()
             self.caps_holder.addWidget(caps_widget(tr, caps))
 
+        self._refresh_dns_info()
+        self._refresh_devices()
+
+    def _refresh_dns_info(self):
+        tr, mon = self.tr, self.dns_mon
+        if mon is None:
+            text = ""
+        elif mon.status.startswith("error:"):
+            text = tr("dns_error", err=mon.status[6:])
+        elif mon.receiving:
+            text = tr("dns_ok", d=len(mon.clients))
+        else:
+            text = "<b>" + tr("dns_title") + "</b><br>" + \
+                tr("dns_setup", ip=_primary_ipv4() or "?", gw=self.s.host)
+        self.dns_info.setText(text)
+        self.dns_info.setVisible(bool(text))
+
+    def _toggle_offline(self):
+        self._remember("show_offline", not self.s.show_offline)
         self._refresh_devices()
 
     # ---------------------------------------------------------------- devices & sites
@@ -457,6 +495,12 @@ class MainWindow(QMainWindow):
             return dev_tot.get(m, 0) if has_dev_usage else 0
 
         is_on = lambda m: (m in live and live[m].online) or m == pc_mac
+        offline = [m for m in macs if not is_on(m) and m not in self.blocked_macs]
+        if not self.s.show_offline:
+            macs = macs - set(offline)
+        self.offline_btn.setText(tr("hide_offline") if self.s.show_offline
+                                 else tr("show_offline", n=len(offline)))
+        self.offline_btn.setVisible(bool(offline))
         order = sorted(macs, key=lambda m: (m in self.blocked_macs, m != pc_mac, not is_on(m), -usage(m),
                                             self._display_name(m, meta.get(m, ("",))[0]).lower()))
         keys = list(order)
@@ -487,7 +531,7 @@ class MainWindow(QMainWindow):
                 items = [(d, d, None, 0, True, tr("blocked"), f"{i:02d}")
                          for i, d in enumerate(sorted(self.blocked_domains), 1)]
                 card.set_sites(items)
-        self.dev_section.badge.setText(f"{len(order)}  {tr('devices_word')}")
+        self.dev_section.badge.setText(f"{len(order) + (0 if self.s.show_offline else len(offline))}  {tr('devices_word')}")
         self.dev_section.set_empty("" if order or not self.connected_once else tr("no_data"))
 
     def _sync_cards(self, keys, meta):
@@ -509,6 +553,9 @@ class MainWindow(QMainWindow):
                     card.context.connect(self._device_menu)
                     card.activated.connect(self._rename)
                 self.cards[k] = card
+        if keys == self._card_order:
+            return
+        self._card_order = list(keys)
         lay = self.dev_section.list
         while lay.count():
             lay.takeAt(0)
@@ -538,15 +585,8 @@ class MainWindow(QMainWindow):
             totals = {k[len(prefix):]: v for k, v in dns_sites.items() if k.startswith(prefix)}
             show_bytes = False
             mon = self.dns_mon
-            if mon is None:
-                empty, action = tr("dns_intro"), tr("dns_enable")
-            elif mon.status.startswith("error:"):
-                empty, action = tr("dns_error", err=mon.status[6:]), tr("retry")
-            elif not totals and not mon.receiving:
-                empty = tr("dns_setup", ip=_primary_ipv4() or "?", gw=self.s.host) + "<br><br>" + \
-                    tr("dns_status", n=mon.total_queries, d=len(mon.clients))
-            elif not totals:
-                empty = tr("no_sites_yet")
+            if not totals:
+                empty = tr("no_sites_yet") if (mon and mon.receiving) else tr("sites_need_dns")
         order = sorted(totals, key=lambda d: (d in self.blocked_domains, d == UNRESOLVED, -totals[d], d))[:60]
         peak = max([totals[d] for d in order] + [1])
         items = []
@@ -607,6 +647,8 @@ class MainWindow(QMainWindow):
                 changed = True
         if changed and self.isVisible():
             self._refresh_devices()
+        if self.isVisible() and self.dns_mon and not self.dns_mon.receiving:
+            self._refresh_dns_info()
 
     # ================================================================ alarm
     def _alarm_key(self):

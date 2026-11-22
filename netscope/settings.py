@@ -32,12 +32,14 @@ class Settings:
     nicknames: dict = field(default_factory=dict)   # mac -> custom name
     router_label: str = ""
     pc_monitor: bool = True       # real bytes per website for this PC (Npcap)
-    dns_monitor: bool = False     # rank websites of other devices (DNS on this PC)
+    dns_monitor: bool = True      # rank websites of other devices (DNS helper on this PC)
     sites_tab: str = "pc"         # "pc" | "others"
     alarm_gb: float = 0.0         # Windows notification when usage reaches this (0 = off)
     alarm_fired: str = ""         # "<start>|<gb>" already notified – never repeat
     autostart: bool = True        # start with Windows (runs in the tray)
-    router_open: bool = False
+    router_open: bool = True
+    show_offline: bool = False    # list offline devices too
+    ui_version: int = 0
     host: str = "192.168.1.1"
     port: int = 22
     username: str = "admin"

@@ -7,7 +7,7 @@ GB = 1024 ** 3
 
 DEVICES = [
     Device("aa:bb:cc:00:00:02", "Desktop PC", "192.168.1.2", "pc"),
-    Device("aa:bb:cc:00:00:03", "iPhone", "192.168.1.3", "phone"),
+    Device("aa:bb:cc:00:00:03", "Mobile Device", "192.168.1.3", "phone"),
     Device("aa:bb:cc:00:00:04", "Smart TV", "192.168.1.4", "tv"),
     Device("aa:bb:cc:00:00:05", "Laptop", "192.168.1.5", "laptop"),
 ]
