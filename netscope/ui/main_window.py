@@ -28,7 +28,7 @@ from ..settings import Settings, data_dir
 from ..store import UsageStore
 from ..theme import make_palette, stylesheet
 from .dialogs import DateDialog, SettingsDialog
-from .widgets import (GLYPH, CollapsibleSection, DeviceCard, Gauge, SpeedTile, Toast,
+from .widgets import (GLYPH, CollapsibleSection, DeviceCard, Gauge, SpeedTile, Toast, fmt_size,
                       icon_button, icon_label)
 from .wizard import SetupWizard, caps_widget
 
@@ -339,7 +339,7 @@ class MainWindow(QMainWindow):
             if snap.wan_delta:
                 self.store.add("wan", {"wan": snap.wan_delta})
             if snap.catch_up_bytes > 1024 * 1024:
-                msg = self.tr("catch_up", gb=f"{snap.catch_up_bytes / GB:,.2f}")
+                msg = self.tr("catch_up", gb=fmt_size(snap.catch_up_bytes))
                 self.toast.show_message(msg, ms=12000)
                 if not self.isVisible():
                     self.notify(APP_NAME, msg)
@@ -472,7 +472,7 @@ class MainWindow(QMainWindow):
             elif label == tr("unknown_device"):
                 sub = f"{ip} · {m.upper()}"
             u = usage(m)
-            usage_text = f"{u / GB:,.2f} GB" if (u and (m == pc_mac or has_dev_usage)) else ""
+            usage_text = fmt_size(u) if (u and (m == pc_mac or has_dev_usage)) else ""
             card.set_header(label, sub, is_on(m), tr("online") if is_on(m) else tr("offline_dev"),
                             usage_text, m in self.blocked_macs, tr("blocked"))
             if card.is_open:

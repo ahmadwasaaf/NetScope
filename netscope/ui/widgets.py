@@ -58,6 +58,16 @@ def fmt_gb(nbytes: float) -> str:
     return f"{nbytes / 1024 ** 3:,.2f}"
 
 
+def fmt_size(nbytes: float) -> str:
+    """1.25 GB · 460 MB · 820 KB – the unit that reads naturally."""
+    if nbytes >= 1024 ** 3:
+        return f"{nbytes / 1024 ** 3:,.2f} GB"
+    if nbytes >= 1024 ** 2:
+        mb = nbytes / 1024 ** 2
+        return f"{mb:,.1f} MB" if mb < 10 else f"{mb:,.0f} MB"
+    return f"{max(nbytes, 0) / 1024:,.0f} KB"
+
+
 def fmt_speed(bps) -> str:
     if bps is None:
         return "—"
@@ -359,7 +369,7 @@ class UsageRow(QFrame):
         else:
             self.dot.show()
             self.dot.setStyleSheet(f"font-size: 8px; color: {self.p.success if online else self.p.track};")
-        self.usage.setText(f"{fmt_gb(nbytes)} GB" if nbytes is not None else "")
+        self.usage.setText(fmt_size(nbytes) if nbytes is not None else "")
         self.bar.setVisible(nbytes is not None)
         self.chip.setText(blocked_text)
         self.chip.setVisible(blocked)

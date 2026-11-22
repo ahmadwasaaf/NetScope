@@ -34,11 +34,6 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -u tests/smoke_ui.py
 
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: screenshots
-          path: screens/*.png
 
       - name: Build NetScope.exe
         run: >
@@ -56,8 +51,10 @@ jobs:
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\NetScope.iss
 
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: NetScope-windows
+          retention-days: 3
           path: |
             dist/NetScope.exe
             dist/NetScope-Setup.exe

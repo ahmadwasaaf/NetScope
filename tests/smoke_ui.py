@@ -72,4 +72,8 @@ for tag, kw in (("dark_en", {}), ("dark_ar", {"language": "ar"}),
 if errors:
     print("\n".join(errors))
     sys.exit(1)
+import base64
+for name in sorted(os.listdir(OUT)):
+    with open(os.path.join(OUT, name), "rb") as f:
+        print(f"==PNG {name}==" + base64.b64encode(f.read()).decode() + "==END==")
 print("UI smoke test passed")
