@@ -2,7 +2,7 @@
 import time
 from collections import deque
 
-from PySide6.QtCore import (Property, QEasingCurve, QPointF, QPropertyAnimation, QRectF,
+from PySide6.QtCore import (Property, QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRectF, QVariantAnimation,
                             Qt, QTimer, Signal)
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtCore import QLocale
@@ -177,101 +177,99 @@ class Gauge(QWidget):
             qp.drawText(QRectF(0, cy + side * 0.16, w, side * 0.08), Qt.AlignCenter, self.subcaption)
 
 
-# ---------------------------------------------------------------------------- Sparkline
-class Sparkline(QWidget):
-    """Live speed graph that scrolls continuously and smoothly.
+# ---------------------------------------------------------------------------- Waves
+class Waves(QWidget):
+    """Decorative live animation (not a chart): layered waves that keep flowing while the
+    router is online, and calm down to a flat grey line when it is not."""
 
-    Readings arrive every few seconds (sometimes later); the graph is drawn against
-    real time at ~60 fps, so it keeps gliding between readings instead of jumping.
-    The newest point eases towards the latest reading, the vertical scale eases too,
-    and the line is a smooth curve."""
-    WINDOW = 60.0          # seconds shown
-
-    def __init__(self, palette: Palette, color: str = "", points: int = 40):
+    def __init__(self, palette: Palette, color: str = "", phase: float = 0.0):
         super().__init__()
         self.p = palette
         self.color = QColor(color or palette.accent)
-        self.samples = deque(maxlen=200)          # (t, value)
-        self.target = 0.0
-        self.cur = 0.0
-        self.top = 1.0
+        self.grey = QColor(palette.subtext)
+        self.phase = phase
+        self.alive = True
+        self.level = 1.0                      # 1 = full motion, 0 = flat
+        self.t = phase * 3.7
         self._last = time.monotonic()
         self.setMinimumHeight(34)
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.timeout.connect(self._tick)
 
-    @property
-    def data(self):                               # kept for older callers
-        return [v for _, v in self.samples]
-
-    def push(self, v):
-        now = time.monotonic()
-        if self.samples or self.cur:
-            self.samples.append((now, self.cur))
-        self.target = float(v or 0)
+    def set_alive(self, alive: bool):
+        self.alive = bool(alive)
 
     def showEvent(self, e):
         self._last = time.monotonic()
         self.timer.start(16)
         super().showEvent(e)
 
-    def hideEvent(self, e):                       # minimised to tray -> no CPU
+    def hideEvent(self, e):
         self.timer.stop()
         super().hideEvent(e)
 
     def _tick(self):
         now = time.monotonic()
-        dt = min(0.25, now - self._last)
+        dt = min(0.1, now - self._last)
         self._last = now
-        k = 1 - pow(0.02, dt)                     # ~98 % of the way in one second
-        self.cur += (self.target - self.cur) * k
-        while len(self.samples) > 2 and self.samples[1][0] < now - self.WINDOW - 5:
-            self.samples.popleft()
-        peak = max([v for _, v in self.samples] + [self.cur, 1.0])
-        self.top += (peak * 1.15 - self.top) * (1 - pow(0.1, dt))
+        target = 1.0 if self.alive else 0.0
+        self.level += (target - self.level) * (1 - pow(0.05, dt))
+        self.t += dt * (0.35 + 0.65 * self.level)
         self.update()
 
+    def _mix(self):
+        c, g, k = self.color, self.grey, self.level
+        return QColor(int(g.red() + (c.red() - g.red()) * k), int(g.green() + (c.green() - g.green()) * k),
+                      int(g.blue() + (c.blue() - g.blue()) * k))
+
     def paintEvent(self, _):
+        import math
         qp = QPainter(self)
         qp.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height() - 3
-        now = time.monotonic()
-        top = max(self.top, 1.0)
-        x = lambda t: w - (now - t) / self.WINDOW * w
-        y = lambda v: 2 + h - min(v / top, 1.0) * (h - 2)
-        pts = [QPointF(x(t), y(v)) for t, v in self.samples]
-        pts.append(QPointF(w, y(self.cur)))
-        if len(pts) == 1:
-            pts.insert(0, QPointF(0, pts[0].y()))
-        if pts[0].x() > 0:                        # extend flat to the left edge
-            pts.insert(0, QPointF(0, pts[0].y()))
-        line = QPainterPath(pts[0])
-        for i in range(1, len(pts)):              # Catmull-Rom -> cubic Bezier
-            p0 = pts[i - 2] if i > 1 else pts[i - 1]
-            p1, p2 = pts[i - 1], pts[i]
-            p3 = pts[i + 1] if i + 1 < len(pts) else p2
-            c1 = QPointF(p1.x() + (p2.x() - p0.x()) / 6, p1.y() + (p2.y() - p0.y()) / 6)
-            c2 = QPointF(p2.x() - (p3.x() - p1.x()) / 6, p2.y() - (p3.y() - p1.y()) / 6)
-            c1.setY(min(max(c1.y(), 1), h + 2))
-            c2.setY(min(max(c2.y(), 1), h + 2))
-            line.cubicTo(c1, c2, p2)
-        area = QPainterPath(line)
-        area.lineTo(w, h + 3)
-        area.lineTo(0, h + 3)
-        grad = QLinearGradient(0, 0, 0, h)
-        c1 = QColor(self.color)
-        c1.setAlpha(80)
-        c2 = QColor(self.color)
-        c2.setAlpha(0)
-        grad.setColorAt(0, c1)
-        grad.setColorAt(1, c2)
-        qp.fillPath(area, grad)
-        pen = QPen(self.color, 1.8)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        qp.setPen(pen)
-        qp.drawPath(line)
+        w, h = self.width(), self.height()
+        mid = h * 0.58
+        col = self._mix()
+        t, lv = self.t, self.level
+        layers = (  # (amplitude, wavelength px, speed, alpha, pen width)
+            (0.30, 150, 2.6, 70, 0.0),
+            (0.22, 95, -1.9, 55, 0.0),
+            (0.34, 120, 3.4, 255, 1.8),
+        )
+        step = 3
+        for amp, wl, sp, alpha, pen_w in layers:
+            a = amp * h * lv
+            k = 2 * math.pi / wl
+            path = QPainterPath()
+            for i, x in enumerate(range(0, w + step, step)):
+                env = 0.55 + 0.45 * math.sin(x / max(w, 1) * math.pi * 1.3 + t * 0.7 + self.phase)
+                y = mid - a * env * (math.sin(k * x - sp * t + self.phase) * 0.75
+                                     + math.sin(k * 0.47 * x + sp * 0.6 * t) * 0.25)
+                if i == 0:
+                    path.moveTo(x, y)
+                else:
+                    path.lineTo(x, y)
+            if pen_w:
+                area = QPainterPath(path)
+                area.lineTo(w, h)
+                area.lineTo(0, h)
+                grad = QLinearGradient(0, 0, 0, h)
+                c1 = QColor(col)
+                c1.setAlpha(int(85 * (0.4 + 0.6 * lv)))
+                c2 = QColor(col)
+                c2.setAlpha(0)
+                grad.setColorAt(0, c1)
+                grad.setColorAt(1, c2)
+                qp.fillPath(area, grad)
+                pen = QPen(col, pen_w)
+                pen.setCapStyle(Qt.RoundCap)
+                qp.setPen(pen)
+                qp.drawPath(path)
+            else:
+                c = QColor(col)
+                c.setAlpha(int(alpha * lv))
+                qp.setPen(QPen(c, 1.2))
+                qp.drawPath(path)
 
 
 class SpeedTile(QFrame):
@@ -298,34 +296,20 @@ class SpeedTile(QFrame):
         self.now = QLabel()
         self.now.setObjectName("Muted")
         v.addWidget(self.now)
-        self.spark = Sparkline(palette, color)
-        v.addWidget(self.spark)
-        self._line = None
-        self._has_now = False
-        self.label_timer = QTimer(self)               # "in use now" glides with the graph
-        self.label_timer.timeout.connect(self._update_now)
-        self.label_timer.start(150)
+        self.waves = Waves(palette, color, phase=1.3 if color else 0.0)
+        v.addWidget(self.waves)
 
     def set_values(self, line_kbps, now_bps):
-        self._line = line_kbps
-        self._has_now = now_bps is not None
         if line_kbps:
             self.value.setText(fmt_speed(line_kbps * 1000 / 8))
-            self.now.setVisible(self._has_now)
+            self.now.setText(f"{self.now_label}: {fmt_speed(now_bps)}" if now_bps is not None else "")
+            self.now.setVisible(now_bps is not None)
         else:                                  # router doesn't report its line speed
+            self.value.setText(fmt_speed(now_bps))
             self.now.hide()
-        self.spark.push(now_bps)
-        self._update_now()
 
-    def _update_now(self):
-        if not self.isVisible():
-            return
-        v = self.spark.cur
-        if self._line:
-            if self._has_now:
-                self.now.setText(f"{self.now_label}: {fmt_speed(v)}")
-        elif self._has_now:
-            self.value.setText(fmt_speed(v))
+    def set_alive(self, alive: bool):
+        self.waves.set_alive(alive)
 
 
 # ---------------------------------------------------------------------------- Bar
@@ -611,8 +595,14 @@ class DeviceCard(QFrame):
         super().__init__()
         self.key, self.p, self.is_open = key, palette, open_
         self.setObjectName("DevCard")
+        self.active = False
+        self._hover = 0.0
+        self.hover_anim = QVariantAnimation(self)
+        self.hover_anim.setDuration(170)
+        self.hover_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self.hover_anim.valueChanged.connect(self._set_hover)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(self.INSET, self.INSET, self.INSET, self.INSET)
         outer.setSpacing(0)
 
         self.header = QFrame()
@@ -657,7 +647,7 @@ class DeviceCard(QFrame):
         self.header.mousePressEvent = lambda e: self.toggle() if e.button() == Qt.LeftButton else None
         self.header.mouseDoubleClickEvent = lambda e: self.activated.emit(self.key)
         self.header.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        self.header.setAttribute(Qt.WA_Hover, True)          # QFrame needs this for :hover styles
+        self.header.installEventFilter(self)
         outer.addWidget(self.header)
 
         self.body = QWidget()
@@ -689,13 +679,49 @@ class DeviceCard(QFrame):
         self.body.setVisible(open_)
         self.rows = {}
         self._dim = None
-        self.setProperty("open", bool(open_))
-        self.setProperty("nested", False)
 
-    def _repolish(self):
-        self.style().unpolish(self)
-        self.style().polish(self)
+    INSET = 3          # the box sits 3 px inside the widget; on hover it grows into that space
+
+    def eventFilter(self, obj, e):
+        if obj is self.header and e.type() in (QEvent.Enter, QEvent.Leave):
+            self.hover_anim.stop()
+            self.hover_anim.setStartValue(self._hover)
+            self.hover_anim.setEndValue(1.0 if e.type() == QEvent.Enter else 0.0)
+            self.hover_anim.start()
+        return False
+
+    def _set_hover(self, v):
+        self._hover = float(v)
         self.update()
+
+    def set_active(self, active: bool):
+        if self.active != bool(active):
+            self.active = bool(active)
+            self.update()
+
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        hv = self._hover
+        inset = self.INSET * (1 - hv)
+        r = QRectF(self.rect()).adjusted(inset + 0.5, inset + 0.5, -inset - 0.5, -inset - 0.5)
+        if hv > 0.01:
+            bg = QColor(self.p.hover)
+            bg.setAlphaF(min(1.0, 0.9 * hv))
+            qp.setBrush(bg)
+        else:
+            qp.setBrush(Qt.NoBrush)
+        if self.active:
+            pen = QPen(QColor(self.p.accent), 2)
+        else:
+            base, lit = QColor(self.p.border), QColor(self.p.subtext)
+            c = QColor(int(base.red() + (lit.red() - base.red()) * hv * 0.6),
+                       int(base.green() + (lit.green() - base.green()) * hv * 0.6),
+                       int(base.blue() + (lit.blue() - base.blue()) * hv * 0.6))
+            pen = QPen(c, 1)
+        qp.setPen(pen)
+        rad = 14 + 2 * hv
+        qp.drawRoundedRect(r, rad, rad)
 
     def set_open(self, open_: bool):
         """Open/close without emitting `toggled` (used for automatic opening)."""
@@ -705,13 +731,9 @@ class DeviceCard(QFrame):
         self.is_open = open_
         self.chev.setText(GLYPH["up" if open_ else "down"])
         self.body.setVisible(open_)
-        self.setProperty("open", open_)
-        self._repolish()
 
     def set_nested(self, nested: bool):
-        if self.property("nested") != nested:
-            self.setProperty("nested", nested)
-            self._repolish()
+        pass
 
     def toggle(self):
         self.set_open(not self.is_open)

@@ -70,6 +70,9 @@ def run(tag, **settings):
             rows = [r for r in card.rows.values() if r.isVisible()]
             if not rows or min(r.height() for r in rows) < 20:
                 errors.append(f"{tag}: website rows not visible ({[r.height() for r in rows]})")
+        active = [k for k, c in win._all_cards() if c.active]
+        if active != ["grp:phone"]:
+            errors.append(f"{tag}: highlight should be only on the last opened card, got {active}")
         win.grab().toImage().save(os.path.join(OUT, f"{tag}.jpg"), "JPG", 70)
         win.scroll_body.grab().toImage().save(os.path.join(OUT, f"{tag}_page.jpg"), "JPG", 60)
         win.quit_app()

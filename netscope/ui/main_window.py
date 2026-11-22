@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
         self.blocked_macs: set = set()
         self.blocked_domains: set = set()
         self.open_devices: set = set()
+        self.active_key = None                 # the one card the user picked last (highlighted)
         self.user_closed: set = set()          # devices the user closed by hand (not re-opened automatically)
         self.cards = {}
         self._quitting = False
@@ -300,12 +301,9 @@ class MainWindow(QMainWindow):
         card = QFrame()
         card.setObjectName("Card")
         v = QVBoxLayout(card)
-        v.setContentsMargins(18, 14, 18, 16)
+        v.setContentsMargins(18, 8, 18, 16)
         v.setSpacing(12)
         top = QHBoxLayout()
-        cap = QLabel(self.tr("total_usage"))
-        cap.setObjectName("CardCaption")
-        top.addWidget(cap)
         top.addStretch(1)
         self.note = QLabel(self.tr("demo_note"))
         self.note.setObjectName("Badge")
@@ -379,6 +377,9 @@ class MainWindow(QMainWindow):
             if Cap.LIVE_SPEED in self.caps or Cap.LINE_RATE in self.caps:
                 self.down_tile.set_values(snap.line_down_kbps, snap.down_bps)
                 self.up_tile.set_values(snap.line_up_kbps, snap.up_bps)
+        alive = bool(snap.online and not snap.error)      # waves flow while the router is reachable
+        self.down_tile.set_alive(alive)
+        self.up_tile.set_alive(alive)
         self._refresh_view()
 
     def _display_name(self, mac, router_name):
@@ -531,6 +532,7 @@ class MainWindow(QMainWindow):
             if m not in self.dev_cards:
                 card = DeviceCard(m, self.p, kind(m) if kind(m) in GLYPH else "other",
                                   open_=m in self.open_devices)
+                card.set_active(m == self.active_key)
                 card.toggled.connect(self._card_toggled)
                 card.site_context.connect(self._site_menu)
                 card.action.connect(self._card_action)
@@ -617,6 +619,7 @@ class MainWindow(QMainWindow):
             if k not in self.cards:
                 icon = "block" if k == BLOCKED_KEY else (k[4:] if k[4:] in GLYPH else "other")
                 card = DeviceCard(k, self.p, icon, open_=k in self.open_devices)
+                card.set_active(k == self.active_key)
                 card.toggled.connect(self._card_toggled)
                 card.site_context.connect(self._site_menu)
                 self.cards[k] = card
@@ -629,8 +632,20 @@ class MainWindow(QMainWindow):
         for k in keys:
             lay.addWidget(self.cards[k])
 
+    def _all_cards(self):
+        return list(self.cards.items()) + list(self.dev_cards.items())
+
+    def _set_active(self, key):
+        self.active_key = key
+        for k, c in self._all_cards():
+            c.set_active(k == key)
+
     def _card_toggled(self, key, is_open):
         (self.open_devices.add if is_open else self.open_devices.discard)(key)
+        if is_open:
+            self._set_active(key)
+        elif getattr(self, "active_key", None) == key:
+            self._set_active(None)
         if not key.startswith("grp:"):
             (self.user_closed.discard if is_open else self.user_closed.add)(key)
         elif is_open:                       # opening a type opens its connected devices

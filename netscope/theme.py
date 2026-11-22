@@ -83,16 +83,12 @@ def stylesheet(p: Palette) -> str:
     QCalendarWidget QWidget#qt_calendar_navigationbar {{ background: {p.accent}; }}
     QCalendarWidget QAbstractItemView {{ background: {p.card}; selection-background-color: {p.accent};
         selection-color: white; }}
-    #DevCard {{ background: transparent; border: 1px solid {p.border}; border-radius: 14px; }}
-    #DevHeader {{ border-radius: 14px; }}
-    #DevHeader:hover {{ background: {p.accent_soft(26)}; }}
-    #DevCard[open="true"] {{ border: 1px solid {p.accent_soft(120)}; background: {p.accent_soft(6)}; }}
-    #DevCard[open="true"][nested="true"] {{ border: 2px solid {p.accent}; background: {p.accent_soft(14)}; }}
+    #DevCard, #DevHeader {{ background: transparent; border: none; }}
     #VSep {{ background: {p.border}; min-height: 30px; max-height: 30px; }}
     #DevName {{ font-size: 15px; font-weight: 600; }}
     #DevUsage {{ font-size: 15px; font-weight: 700; }}
-    #OnPill {{ background: rgba(46,204,113,32); color: {p.success}; border-radius: 11px; padding: 3px 10px; font-size: 12px; }}
-    #OffPill {{ background: {p.chip}; color: {p.subtext}; border-radius: 11px; padding: 3px 10px; font-size: 12px; }}
+    #OnPill {{ background: transparent; color: {p.success}; padding: 3px 4px; font-size: 12px; }}
+    #OffPill {{ background: transparent; color: {p.subtext}; padding: 3px 4px; font-size: 12px; }}
     #CountBadge {{ border: 1px solid {p.border}; border-radius: 13px; padding: 3px 10px; font-size: 13px; }}
     #Seg {{ background: {p.window}; border-radius: 11px; }}
     QPushButton#SegBtn {{ background: transparent; border-radius: 8px; padding: 7px 14px; color: {p.subtext}; }}
