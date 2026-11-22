@@ -36,6 +36,20 @@ jobs:
         run: python -u tests/smoke_ui.py
 
 
+      - name: Version from the release tag
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}"
+          if ($v -match '^v(\d+(\.\d+)*)$') {
+            $v = $Matches[1]
+            (Get-Content netscope/__init__.py) -replace 'APP_VERSION = ".*"', "APP_VERSION = `"$v`"" | Set-Content netscope/__init__.py
+            "APP_VERSION=$v" >> $env:GITHUB_ENV
+          } else {
+            $cur = (Select-String -Path netscope/__init__.py -Pattern 'APP_VERSION = "(.*)"').Matches[0].Groups[1].Value
+            "APP_VERSION=$cur" >> $env:GITHUB_ENV
+          }
+          Get-Content netscope/__init__.py
+
       - name: Build NetScope.exe
         run: >
           pyinstaller --noconfirm --clean --onefile --windowed
@@ -49,7 +63,7 @@ jobs:
       - name: Build NetScope-Setup.exe
         run: |
           choco install innosetup -y --no-progress
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\NetScope.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:APP_VERSION" installer\NetScope.iss
 
       - uses: actions/upload-artifact@v4
         continue-on-error: true

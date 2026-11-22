@@ -1,10 +1,13 @@
 """Custom widgets: gauge, sparkline, usage rows, collapsible section, toast, spinner."""
+import time
 from collections import deque
 
 from PySide6.QtCore import (Property, QEasingCurve, QPointF, QPropertyAnimation, QRectF,
                             Qt, QTimer, Signal)
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
+from PySide6.QtCore import QLocale
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame,
+                               QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QSizePolicy, QToolButton,
                                QVBoxLayout, QWidget)
 
@@ -176,39 +179,98 @@ class Gauge(QWidget):
 
 # ---------------------------------------------------------------------------- Sparkline
 class Sparkline(QWidget):
+    """Live speed graph that scrolls continuously and smoothly.
+
+    Readings arrive every few seconds (sometimes later); the graph is drawn against
+    real time at ~60 fps, so it keeps gliding between readings instead of jumping.
+    The newest point eases towards the latest reading, the vertical scale eases too,
+    and the line is a smooth curve."""
+    WINDOW = 60.0          # seconds shown
+
     def __init__(self, palette: Palette, color: str = "", points: int = 40):
         super().__init__()
         self.p = palette
         self.color = QColor(color or palette.accent)
-        self.data = deque([0.0] * points, maxlen=points)
+        self.samples = deque(maxlen=200)          # (t, value)
+        self.target = 0.0
+        self.cur = 0.0
+        self.top = 1.0
+        self._last = time.monotonic()
         self.setMinimumHeight(34)
+        self.timer = QTimer(self)
+        self.timer.setTimerType(Qt.PreciseTimer)
+        self.timer.timeout.connect(self._tick)
+
+    @property
+    def data(self):                               # kept for older callers
+        return [v for _, v in self.samples]
 
     def push(self, v):
-        self.data.append(float(v or 0))
+        now = time.monotonic()
+        if self.samples or self.cur:
+            self.samples.append((now, self.cur))
+        self.target = float(v or 0)
+
+    def showEvent(self, e):
+        self._last = time.monotonic()
+        self.timer.start(16)
+        super().showEvent(e)
+
+    def hideEvent(self, e):                       # minimised to tray -> no CPU
+        self.timer.stop()
+        super().hideEvent(e)
+
+    def _tick(self):
+        now = time.monotonic()
+        dt = min(0.25, now - self._last)
+        self._last = now
+        k = 1 - pow(0.02, dt)                     # ~98 % of the way in one second
+        self.cur += (self.target - self.cur) * k
+        while len(self.samples) > 2 and self.samples[1][0] < now - self.WINDOW - 5:
+            self.samples.popleft()
+        peak = max([v for _, v in self.samples] + [self.cur, 1.0])
+        self.top += (peak * 1.15 - self.top) * (1 - pow(0.1, dt))
         self.update()
 
     def paintEvent(self, _):
         qp = QPainter(self)
         qp.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height() - 2
-        top = max(self.data) or 1
-        n = len(self.data) - 1
-        pts = [QPointF(i * w / n, 1 + h - v / top * (h - 2)) for i, v in enumerate(self.data)]
+        w, h = self.width(), self.height() - 3
+        now = time.monotonic()
+        top = max(self.top, 1.0)
+        x = lambda t: w - (now - t) / self.WINDOW * w
+        y = lambda v: 2 + h - min(v / top, 1.0) * (h - 2)
+        pts = [QPointF(x(t), y(v)) for t, v in self.samples]
+        pts.append(QPointF(w, y(self.cur)))
+        if len(pts) == 1:
+            pts.insert(0, QPointF(0, pts[0].y()))
+        if pts[0].x() > 0:                        # extend flat to the left edge
+            pts.insert(0, QPointF(0, pts[0].y()))
         line = QPainterPath(pts[0])
-        for pt in pts[1:]:
-            line.lineTo(pt)
+        for i in range(1, len(pts)):              # Catmull-Rom -> cubic Bezier
+            p0 = pts[i - 2] if i > 1 else pts[i - 1]
+            p1, p2 = pts[i - 1], pts[i]
+            p3 = pts[i + 1] if i + 1 < len(pts) else p2
+            c1 = QPointF(p1.x() + (p2.x() - p0.x()) / 6, p1.y() + (p2.y() - p0.y()) / 6)
+            c2 = QPointF(p2.x() - (p3.x() - p1.x()) / 6, p2.y() - (p3.y() - p1.y()) / 6)
+            c1.setY(min(max(c1.y(), 1), h + 2))
+            c2.setY(min(max(c2.y(), 1), h + 2))
+            line.cubicTo(c1, c2, p2)
         area = QPainterPath(line)
-        area.lineTo(w, h + 1)
-        area.lineTo(0, h + 1)
+        area.lineTo(w, h + 3)
+        area.lineTo(0, h + 3)
         grad = QLinearGradient(0, 0, 0, h)
         c1 = QColor(self.color)
-        c1.setAlpha(90)
+        c1.setAlpha(80)
         c2 = QColor(self.color)
         c2.setAlpha(0)
         grad.setColorAt(0, c1)
         grad.setColorAt(1, c2)
         qp.fillPath(area, grad)
-        qp.setPen(QPen(self.color, 1.8))
+        pen = QPen(self.color, 1.8)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        qp.setPen(pen)
         qp.drawPath(line)
 
 
@@ -238,16 +300,32 @@ class SpeedTile(QFrame):
         v.addWidget(self.now)
         self.spark = Sparkline(palette, color)
         v.addWidget(self.spark)
+        self._line = None
+        self._has_now = False
+        self.label_timer = QTimer(self)               # "in use now" glides with the graph
+        self.label_timer.timeout.connect(self._update_now)
+        self.label_timer.start(150)
 
     def set_values(self, line_kbps, now_bps):
+        self._line = line_kbps
+        self._has_now = now_bps is not None
         if line_kbps:
             self.value.setText(fmt_speed(line_kbps * 1000 / 8))
-            self.now.setText(f"{self.now_label}: {fmt_speed(now_bps)}" if now_bps is not None else "")
-            self.now.setVisible(now_bps is not None)
+            self.now.setVisible(self._has_now)
         else:                                  # router doesn't report its line speed
-            self.value.setText(fmt_speed(now_bps))
             self.now.hide()
         self.spark.push(now_bps)
+        self._update_now()
+
+    def _update_now(self):
+        if not self.isVisible():
+            return
+        v = self.spark.cur
+        if self._line:
+            if self._has_now:
+                self.now.setText(f"{self.now_label}: {fmt_speed(v)}")
+        elif self._has_now:
+            self.value.setText(fmt_speed(v))
 
 
 # ---------------------------------------------------------------------------- Bar
@@ -583,11 +661,32 @@ class DeviceCard(QFrame):
         self.body.setVisible(open_)
         self.rows = {}
         self._dim = None
+        self.setProperty("open", bool(open_))
+        self.setProperty("nested", False)
+
+    def _repolish(self):
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def set_open(self, open_: bool):
+        """Open/close without emitting `toggled` (used for automatic opening)."""
+        open_ = bool(open_)
+        if open_ == self.is_open:
+            return
+        self.is_open = open_
+        self.chev.setText(GLYPH["up" if open_ else "down"])
+        self.body.setVisible(open_)
+        self.setProperty("open", open_)
+        self._repolish()
+
+    def set_nested(self, nested: bool):
+        if self.property("nested") != nested:
+            self.setProperty("nested", nested)
+            self._repolish()
 
     def toggle(self):
-        self.is_open = not self.is_open
-        self.chev.setText(GLYPH["up" if self.is_open else "down"])
-        self.body.setVisible(self.is_open)
+        self.set_open(not self.is_open)
         self.toggled.emit(self.key, self.is_open)
 
     def set_header(self, name, sub, online, status_text, usage_text, blocked, blocked_text):
@@ -623,6 +722,7 @@ class DeviceCard(QFrame):
             while self.sites.count():
                 self.sites.takeAt(0)
             for w in widgets:
+                w.set_nested(True)
                 self.sites.addWidget(w)
         self.empty.setText(empty_text)
         self.empty.setVisible(bool(empty_text))
@@ -765,3 +865,47 @@ class Spinner(QWidget):
         qp.drawEllipse(r)
         qp.setPen(QPen(QColor(self.p.accent), 4, Qt.SolidLine, Qt.RoundCap))
         qp.drawArc(r, -self.angle * 16, 100 * 16)
+
+
+# ---------------------------------------------------------------------------- number input
+class NumberSpin(QDoubleSpinBox):
+    """Decimal input that always accepts both '.' and ',' as the decimal separator."""
+
+    def __init__(self):
+        super().__init__()
+        self.setLocale(QLocale.c())
+        self.setGroupSeparatorShown(False)
+
+    def validate(self, text, pos):
+        return super().validate(text.replace(",", "."), pos)
+
+    def valueFromText(self, text):
+        return super().valueFromText(text.replace(",", "."))
+
+
+def ask_number(parent, title, label, value, decimals=2, hint="", maximum=100000.0):
+    """Small dialog with a decimal field. Returns (value, ok)."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    v = QVBoxLayout(dlg)
+    v.setContentsMargins(16, 14, 16, 12)
+    v.setSpacing(8)
+    v.addWidget(QLabel(label))
+    spin = NumberSpin()
+    spin.setDecimals(decimals)
+    spin.setRange(0, maximum)
+    spin.setValue(value)
+    spin.setMinimumWidth(260)
+    v.addWidget(spin)
+    if hint:
+        h = QLabel(hint)
+        h.setObjectName("Muted")
+        v.addWidget(h)
+    bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    bb.accepted.connect(dlg.accept)
+    bb.rejected.connect(dlg.reject)
+    v.addWidget(bb)
+    spin.selectAll()
+    spin.setFocus()
+    ok = bool(dlg.exec())
+    return spin.value(), ok

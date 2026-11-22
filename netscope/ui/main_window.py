@@ -14,7 +14,7 @@ import sys
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QGuiApplication, QIcon
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QInputDialog, QLabel, QSizePolicy,
+from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QInputDialog, QLabel, QLayout, QSizePolicy,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
                                QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget)
 
@@ -28,7 +28,7 @@ from ..settings import Settings, data_dir
 from ..store import UsageStore
 from ..theme import make_palette, stylesheet
 from .dialogs import DateDialog, SettingsDialog
-from .widgets import (GLYPH, CollapsibleSection, DeviceCard, Gauge, SpeedTile, Toast, fmt_size,
+from .widgets import (GLYPH, CollapsibleSection, DeviceCard, Gauge, SpeedTile, Toast, ask_number, fmt_size,
                       icon_button, icon_label)
 from .wizard import SetupWizard, caps_widget
 
@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
         self.blocked_macs: set = set()
         self.blocked_domains: set = set()
         self.open_devices: set = set()
+        self.user_closed: set = set()          # devices the user closed by hand (not re-opened automatically)
         self.cards = {}
         self._quitting = False
         self._tray_hint_shown = False
@@ -192,6 +193,7 @@ class MainWindow(QMainWindow):
         body = QWidget()
         body.setObjectName("ScrollBody")
         scroll.setWidget(body)
+        self.scroll, self.scroll_body = scroll, body
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 0, 80)          # room to scroll the last card fully into view
         col.setSpacing(12)
@@ -200,6 +202,7 @@ class MainWindow(QMainWindow):
         # ---- router (expandable)
         self.router_section = CollapsibleSection(self.tr("router"), "wifi", self.p, open_=self.s.router_open)
         self.router_section.toggled.connect(lambda o: self._remember("router_open", o))
+        self.router_section.anim.finished.connect(self._schedule_fit)
         self.router_box = QWidget()
         rv = QVBoxLayout(self.router_box)
         rv.setContentsMargins(10, 0, 10, 4)
@@ -233,6 +236,7 @@ class MainWindow(QMainWindow):
                                               search_placeholder=self.tr("search_devices"))
         self.dev_section.badge.setObjectName("CountBadge")
         self.dev_section.toggled.connect(lambda o: self._remember("devices_open", o))
+        self.dev_section.anim.finished.connect(self._schedule_fit)
         self.dev_section.search.textChanged.connect(lambda _: self._refresh_devices())
         self.add_site_btn = icon_button("add", 13)
         self.add_site_btn.setToolTip(self.tr("add_site"))
@@ -255,6 +259,8 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        if hasattr(self, "scroll_body"):
+            self._schedule_fit()
         if hasattr(self, "toast") and self.toast.isVisible():
             self.toast.reposition()
 
@@ -506,6 +512,7 @@ class MainWindow(QMainWindow):
             return t if t in group_ids else "other"
 
         is_on = lambda m: (m in live and live[m].online) or m == pc_mac
+        self._group_members = {}
         groups = {g: [] for g in group_ids}
         for m in macs:
             groups[kind(m)].append(m)
@@ -546,6 +553,7 @@ class MainWindow(QMainWindow):
             self.cards[key].set_header(tr(label_key), sub, online_n > 0,
                                        tr("online") if online_n else tr("offline_dev"),
                                        fmt_size(total) if total else "", False, "")
+            self._group_members[key] = (members, [m for m in members if is_on(m)])
             self.cards[key].set_children([self.dev_cards[m] for m in members],
                                          "" if members else tr("grp_empty"))
             for m in members:
@@ -575,6 +583,28 @@ class MainWindow(QMainWindow):
         self.dev_section.badge.setText(f"{online_total}/{len(macs)}  {tr('devices_word')}")
         self.offline_btn.hide()
         self.dev_section.set_empty("")
+        self._schedule_fit()
+
+    # ---- keep the scroll page as tall as its content (nested cards change height at runtime)
+    def _schedule_fit(self):
+        if not getattr(self, "_fit_pending", False):
+            self._fit_pending = True
+            QTimer.singleShot(0, self._fit_body)
+
+    def _fit_body(self):
+        self._fit_pending = False
+        body = getattr(self, "scroll_body", None)
+        if body is None:
+            return
+        for lay in body.findChildren(QLayout):     # drop every cached size, deepest included
+            lay.invalidate()
+        lay = body.layout()
+        lay.activate()
+        w = self.scroll.viewport().width()
+        h = lay.totalHeightForWidth(w) if lay.hasHeightForWidth() else lay.totalSizeHint().height()
+        if h > 0 and h != body.minimumHeight():
+            body.setMinimumHeight(h)
+        body.updateGeometry()
 
     def _sync_cards(self, keys):
         for k in list(self.cards):
@@ -598,6 +628,14 @@ class MainWindow(QMainWindow):
 
     def _card_toggled(self, key, is_open):
         (self.open_devices.add if is_open else self.open_devices.discard)(key)
+        if not key.startswith("grp:"):
+            (self.user_closed.discard if is_open else self.user_closed.add)(key)
+        elif is_open:                       # opening a type opens its connected devices
+            _, online = getattr(self, "_group_members", {}).get(key, ([], []))
+            for m in online:
+                if m not in self.user_closed and m in self.dev_cards:
+                    self.dev_cards[m].set_open(True)
+                    self.open_devices.add(m)
         self._refresh_devices()
 
     def _fill_sites(self, card, mac, is_pc, pc_sites, dns_sites):
@@ -693,12 +731,13 @@ class MainWindow(QMainWindow):
         if a > 0 and used_gb >= a and self.s.alarm_fired != self._alarm_key():
             self.s.alarm_fired = self._alarm_key()
             self.s.save()
-            msg = self.tr("alarm_msg", used=f"{used_gb:,.2f}", gb=f"{a:,.0f}")
+            msg = self.tr("alarm_msg", used=f"{used_gb:,.2f}", gb=f"{a:,.2f}".rstrip("0").rstrip("."))
             self.notify(self.tr("alarm_title"), msg)
             self.toast.show_message(msg, ms=15000)
 
     def _set_alarm(self):
-        val, ok = QInputDialog.getDouble(self, APP_NAME, self.tr("alarm_prompt"), self.s.alarm_gb, 0, 100000, 1)
+        val, ok = ask_number(self, APP_NAME, self.tr("alarm_prompt"), self.s.alarm_gb, 2,
+                             self.tr("usage_now", used=f"{self._used_bytes() / 1024**3:,.2f}"))
         if ok:
             self.s.alarm_gb = val
             self.s.save()
@@ -806,7 +845,7 @@ class MainWindow(QMainWindow):
             self._refresh_view()
 
     def _set_quota(self):
-        val, ok = QInputDialog.getDouble(self, APP_NAME, self.tr("quota"), self.s.quota_gb, 0, 100000, 0)
+        val, ok = ask_number(self, APP_NAME, self.tr("quota"), self.s.quota_gb, 2)
         if ok:
             self.s.quota_gb = val
             self.s.save()

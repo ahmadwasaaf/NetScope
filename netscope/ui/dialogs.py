@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QCalendarWidget, QCheckBox, QColorDialog, QComboB
 from ..i18n import Translator
 from ..settings import Settings
 from ..theme import ACCENT_PRESETS
+from .widgets import NumberSpin
 
 
 def npcap_version() -> str:
@@ -136,9 +137,9 @@ class SettingsDialog(QDialog):
         sw.setLayout(self.swatch_row)
         gf.addRow(tr("accent"), sw)
         self._build_swatches()
-        self.quota = QDoubleSpinBox()
+        self.quota = NumberSpin()
         self.quota.setRange(0, 100000)
-        self.quota.setDecimals(0)
+        self.quota.setDecimals(2)
         self.quota.setValue(self.s.quota_gb)
         gf.addRow(tr("quota"), self.quota)
         # Npcap (needed for "This PC" website monitoring)

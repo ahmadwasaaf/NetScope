@@ -6,7 +6,9 @@
 ; npcap.com, verifies its digital signature and starts it.
 
 #define AppName "NetScope"
-#define AppVersion "1.0"
+#ifndef AppVersion
+  #define AppVersion "1.3.2"
+#endif
 #define AppExe "NetScope.exe"
 
 [Setup]

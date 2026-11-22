@@ -44,23 +44,30 @@ def run(tag, **settings):
     importlib.reload(mw)
     mw._primary_ipv4 = lambda: "192.168.1.2"            # demo "Desktop PC" is this PC
     win = mw.MainWindow()
-    win.resize(600, 2200)
+    win.resize(600, 860)
     win.store.add("pcsite", {"youtube.com": 900 * 1024**2, "x.com": 470 * 1024**2, "claude.ai": 140 * 1024**2,
                              "google.com": 61 * 1024**2, "whatsapp.com": 41 * 1024**2, "Other / unresolved": 12 * 1024**2})
     win.store.add("devsite", {"aa:bb:cc:00:00:03|tiktok.com": 120, "aa:bb:cc:00:00:03|instagram.com": 80,
                               "aa:bb:cc:00:00:03|youtube.com": 40})
 
-    def expand():
+    def expand():                      # like a user: open the type, connected devices open by themselves
         for key in ("grp:pc", "grp:phone"):
             if key in win.cards and not win.cards[key].is_open:
                 win.cards[key].toggle()
-        for mac in ("aa:bb:cc:00:00:02", "aa:bb:cc:00:00:03"):
-            if mac in win.dev_cards and not win.dev_cards[mac].is_open:
-                win.dev_cards[mac].toggle()
 
     def shoot():
-        img = win.grab().toImage()
-        img.save(os.path.join(OUT, f"{tag}.jpg"), "JPG", 70)
+        card = win.dev_cards.get("aa:bb:cc:00:00:02")
+        if card is None or not card.is_open:
+            errors.append(f"{tag}: This PC did not open automatically")
+        else:
+            need = card.header.sizeHint().height()
+            if card.header.height() < need - 2:
+                errors.append(f"{tag}: device header squashed ({card.header.height()} < {need})")
+            rows = [r for r in card.rows.values() if r.isVisible()]
+            if not rows or min(r.height() for r in rows) < 20:
+                errors.append(f"{tag}: website rows not visible ({[r.height() for r in rows]})")
+        win.grab().toImage().save(os.path.join(OUT, f"{tag}.jpg"), "JPG", 70)
+        win.scroll_body.grab().toImage().save(os.path.join(OUT, f"{tag}_page.jpg"), "JPG", 60)
         win.quit_app()
 
     timers = []

@@ -1,2 +1,2 @@
 APP_NAME = "NetScope"
-APP_VERSION = "1.0"
+APP_VERSION = "1.3.2"

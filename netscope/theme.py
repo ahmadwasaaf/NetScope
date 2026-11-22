@@ -85,7 +85,9 @@ def stylesheet(p: Palette) -> str:
         selection-color: white; }}
     #DevCard {{ background: transparent; border: 1px solid {p.border}; border-radius: 14px; }}
     #DevHeader {{ border-radius: 14px; }}
-    #DevHeader:hover {{ background: {p.accent_soft(38)}; border: 1px solid {p.accent}; }}
+    #DevHeader:hover {{ background: {p.accent_soft(26)}; }}
+    #DevCard[open="true"] {{ border: 1px solid {p.accent_soft(120)}; background: {p.accent_soft(8)}; }}
+    #DevCard[open="true"][nested="true"] {{ border: 2px solid {p.accent}; background: {p.accent_soft(18)}; }}
     #VSep {{ background: {p.border}; min-height: 30px; max-height: 30px; }}
     #DevName {{ font-size: 15px; font-weight: 600; }}
     #DevUsage {{ font-size: 15px; font-weight: 700; }}
@@ -112,5 +114,8 @@ def stylesheet(p: Palette) -> str:
     #Error {{ color: {p.danger}; }}
     QScrollBar:vertical {{ background: transparent; width: 8px; }}
     QScrollBar::handle:vertical {{ background: {p.track}; border-radius: 4px; min-height: 30px; }}
-    QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+    QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; border: none; background: none; }}
+    QScrollBar::add-page, QScrollBar::sub-page {{ background: none; border: none; }}
+    QScrollBar:horizontal {{ background: transparent; height: 8px; }}
+    QScrollBar::handle:horizontal {{ background: {p.track}; border-radius: 4px; min-width: 30px; }}
     """
