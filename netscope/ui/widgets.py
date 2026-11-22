@@ -756,7 +756,8 @@ class DeviceCard(QFrame):
                 bl.removeWidget(self.sites_w)
                 self.sites_scroll.takeWidget()
                 self.sites_scroll.setWidget(self.sites_w)
-                self.sites_w.setObjectName("InnerBody")
+                self.sites_w.setAutoFillBackground(False)       # setWidget turns it on (white box)
+                self.sites_scroll.viewport().setAutoFillBackground(False)
                 self.sites_w.show()
                 self.sites_scroll.show()
             hint = lambda x: x.sizeHint().height()
@@ -769,6 +770,7 @@ class DeviceCard(QFrame):
             self.sites_scroll.setWidget(QWidget())
             self.sites_scroll.hide()
             bl.insertWidget(0, self.sites_w)
+            self.sites_w.setAutoFillBackground(False)
             self.sites_w.show()
 
     def set_children(self, widgets, empty_text=""):
