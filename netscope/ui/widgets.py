@@ -18,7 +18,7 @@ GLYPH = {
     "pc": "", "phone": "", "tv": "", "laptop": "",
     "tablet": "", "other": "", "block": "", "router": "",
     "arrow_down": "", "arrow_up": "", "check": "", "cancel": "",
-    "search": "", "pie": "", "wifi": "",
+    "search": "", "pie": "", "wifi": "", "alarm": "",
 }
 
 
