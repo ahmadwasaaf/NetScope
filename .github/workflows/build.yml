@@ -32,6 +32,7 @@ jobs:
       - name: UI smoke test (demo router, offscreen)
         env:
           QT_QPA_PLATFORM: offscreen
+          QT_QPA_FONTDIR: C:\Windows\Fonts
         run: python -u tests/smoke_ui.py
 
 

@@ -14,7 +14,7 @@ import sys
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QGuiApplication, QIcon
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QInputDialog, QLabel,
+from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QInputDialog, QLabel, QSizePolicy,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
                                QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget)
 
@@ -181,6 +181,7 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # content follows the window width
         outer.addWidget(scroll, 1)
         body = QWidget()
         body.setObjectName("ScrollBody")
@@ -310,8 +311,9 @@ class MainWindow(QMainWindow):
             b.setStyleSheet("font-family: 'Segoe UI', 'Segoe Fluent Icons', 'Segoe MDL2 Assets';")
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(slot)
-            btns.addWidget(b)
-        btns.addStretch(1)
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)   # share the row, never widen it
+            b.setMinimumWidth(60)
+            btns.addWidget(b, 1)
         v.addLayout(btns)
         since_row = QHBoxLayout()
         since = QLabel(self.tr("tracking_since"))

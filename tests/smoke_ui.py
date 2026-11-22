@@ -43,7 +43,7 @@ def run(tag, **settings):
     importlib.reload(netscope.settings)
     importlib.reload(mw)
     win = mw.MainWindow()
-    win.resize(600, 1500)
+    win.resize(600, 1600)
 
     def expand():
         cards = list(win.cards.values())
@@ -53,7 +53,8 @@ def run(tag, **settings):
             cards[1].toggle()
 
     def shoot():
-        win.grab().save(os.path.join(OUT, f"{tag}.png"))
+        img = win.grab().toImage()
+        img.save(os.path.join(OUT, f"{tag}.jpg"), "JPG", 70)
         win.quit_app()
 
     QTimer.singleShot(3500, expand)
@@ -75,5 +76,7 @@ if errors:
 import base64
 for name in sorted(os.listdir(OUT)):
     with open(os.path.join(OUT, name), "rb") as f:
-        print(f"==PNG {name}==" + base64.b64encode(f.read()).decode() + "==END==")
+        data = base64.b64encode(f.read()).decode()
+    for i in range(0, len(data), 60000):          # short log lines
+        print(f"==IMG {name} {i // 60000}==" + data[i:i + 60000] + "==END==")
 print("UI smoke test passed")
