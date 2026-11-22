@@ -6,7 +6,7 @@ from PySide6.QtCore import (Property, QEasingCurve, QPointF, QPropertyAnimation,
                             Qt, QTimer, Signal)
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtCore import QLocale
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QScrollArea,
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QLayout, QScrollArea,
                                QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QSizePolicy, QToolButton,
                                QVBoxLayout, QWidget)
@@ -744,25 +744,26 @@ class DeviceCard(QFrame):
 
     def fit_inner(self):
         """Show up to 5 items; more than that scroll inside the card."""
+        for l in self.findChildren(QLayout):          # nested cards may have just changed size
+            l.invalidate()
         lay = self.sites
         items = [lay.itemAt(i).widget() for i in range(lay.count())]
-        items = [w for w in items if w is not None and not w.isHidden()]
-        lay.invalidate()
+        items = [x for x in items if x is not None]   # (new rows are shown a moment later: don't test isHidden)
+        w = max(50, self.sites_scroll.viewport().width(), self.width() - 30)
         if not items:
-            self.sites_scroll.setFixedHeight(0)
-            self.sites_scroll.setVisible(False)
-            return
-        self.sites_scroll.setVisible(True)
-        w = max(50, self.sites_scroll.viewport().width() or (self.width() - 28))
-        full = lay.totalHeightForWidth(w) if lay.hasHeightForWidth() else lay.totalSizeHint().height()
-        h = full
-        n = self.VISIBLE_ITEMS
-        if len(items) > n:
-            hint = lambda x: x.heightForWidth(w) if x.hasHeightForWidth() else x.sizeHint().height()
-            h = min(full, sum(hint(x) for x in items[:n]) + lay.spacing() * n
-                    + hint(items[n]) // 2)            # half of the 6th shows there is more
-        if self.sites_scroll.height() != h or self.sites_scroll.minimumHeight() != h:
+            h = 0
+        else:
+            full = lay.totalHeightForWidth(w) if lay.hasHeightForWidth() else lay.totalSizeHint().height()
+            h = full
+            n = self.VISIBLE_ITEMS
+            if len(items) > n:
+                hint = lambda x: x.heightForWidth(w) if x.hasHeightForWidth() else x.sizeHint().height()
+                h = min(full, sum(hint(x) for x in items[:n]) + lay.spacing() * n
+                        + hint(items[n]) // 2)        # half of the 6th shows there is more
+        if self.sites_scroll.minimumHeight() != h or self.sites_scroll.maximumHeight() != h:
             self.sites_scroll.setFixedHeight(h)
+        for l in self.findChildren(QLayout):
+            l.invalidate()
 
     def set_children(self, widgets, empty_text=""):
         """Put other cards (the devices of a type group) inside this card."""
