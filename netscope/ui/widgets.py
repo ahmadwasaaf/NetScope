@@ -532,11 +532,8 @@ class DeviceCard(QFrame):
         col.setSpacing(0)
         self.name = QLabel()
         self.name.setObjectName("DevName")
-        self.name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.name.setMinimumWidth(40)
         self.sub = QLabel()
         self.sub.setObjectName("Muted")
-        self.sub.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         col.addWidget(self.name)
         col.addWidget(self.sub)
         h.addLayout(col, 1)
@@ -556,6 +553,7 @@ class DeviceCard(QFrame):
         h.addWidget(self.chev)
         self.header.mousePressEvent = lambda e: self.toggle() if e.button() == Qt.LeftButton else None
         self.header.mouseDoubleClickEvent = lambda e: self.activated.emit(self.key)
+        self.header.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         outer.addWidget(self.header)
 
         self.body = QWidget()
@@ -573,8 +571,6 @@ class DeviceCard(QFrame):
         self.empty.setTextFormat(Qt.RichText)
         self.empty.setOpenExternalLinks(True)
         self.empty.setContentsMargins(4, 6, 4, 6)
-        self.empty.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.empty.setMinimumWidth(10)
         bl.addWidget(self.empty)
         self.action_btn = QPushButton()
         self.action_btn.setObjectName("Primary")

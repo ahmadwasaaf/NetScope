@@ -42,15 +42,21 @@ def run(tag, **settings):
     import netscope.settings, netscope.ui.main_window as mw
     importlib.reload(netscope.settings)
     importlib.reload(mw)
+    mw._primary_ipv4 = lambda: "192.168.1.2"            # demo "Desktop PC" is this PC
     win = mw.MainWindow()
-    win.resize(600, 1600)
+    win.resize(600, 2200)
+    win.store.add("pcsite", {"youtube.com": 900 * 1024**2, "x.com": 470 * 1024**2, "claude.ai": 140 * 1024**2,
+                             "google.com": 61 * 1024**2, "whatsapp.com": 41 * 1024**2, "Other / unresolved": 12 * 1024**2})
+    win.store.add("devsite", {"aa:bb:cc:00:00:03|tiktok.com": 120, "aa:bb:cc:00:00:03|instagram.com": 80,
+                              "aa:bb:cc:00:00:03|youtube.com": 40})
 
     def expand():
-        cards = list(win.cards.values())
-        if cards:
-            cards[0].toggle()
-        if len(cards) > 1:
-            cards[1].toggle()
+        for key in ("grp:pc", "grp:phone"):
+            if key in win.cards and not win.cards[key].is_open:
+                win.cards[key].toggle()
+        for mac in ("aa:bb:cc:00:00:02", "aa:bb:cc:00:00:03"):
+            if mac in win.dev_cards and not win.dev_cards[mac].is_open:
+                win.dev_cards[mac].toggle()
 
     def shoot():
         img = win.grab().toImage()
