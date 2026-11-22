@@ -10,8 +10,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 OUT = os.path.join(ROOT, "screens")
 os.makedirs(OUT, exist_ok=True)
+import faulthandler
+faulthandler.enable()
 errors = []
-sys.excepthook = lambda *exc: errors.append("".join(traceback.format_exception(*exc)))
+
+
+def hook(*exc):
+    text = "".join(traceback.format_exception(*exc))
+    errors.append(text)
+    print(text, file=sys.stderr, flush=True)
+
+
+sys.excepthook = hook
 
 
 def run(tag, **settings):
@@ -53,9 +63,12 @@ def run(tag, **settings):
     print(f"{tag}: devices={len(win.cards)} used={win._used_bytes()/1024**3:.2f} GB")
 
 
-run("dark_en")
-run("dark_ar", language="ar")
-run("light_en", theme="light", accent="#2979FF")
+for tag, kw in (("dark_en", {}), ("dark_ar", {"language": "ar"}),
+                ("light_en", {"theme": "light", "accent": "#2979FF"})):
+    try:
+        run(tag, **kw)
+    except Exception:
+        hook(*sys.exc_info())
 if errors:
     print("\n".join(errors))
     sys.exit(1)
