@@ -540,7 +540,8 @@ class MainWindow(QMainWindow):
             members = groups[g]
             online_n = sum(1 for m in members if is_on(m))
             total = sum(usage(m) for m in members)
-            sub = tr("grp_count", n=len(members), o=online_n) if members else tr("grp_none")
+            sub = (tr("grp_count1", o=online_n) if len(members) == 1 else
+                   tr("grp_count", n=len(members), o=online_n)) if members else tr("grp_none")
             self.cards[key].set_header(tr(label_key), sub, online_n > 0,
                                        tr("online") if online_n else tr("offline_dev"),
                                        fmt_size(total) if total else "", False, "")

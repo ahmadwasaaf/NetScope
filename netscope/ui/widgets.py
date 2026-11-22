@@ -15,7 +15,7 @@ ICON_FAMILIES = ["Segoe Fluent Icons", "Segoe MDL2 Assets"]
 GLYPH = {
     "settings": "", "calendar": "", "chart": "", "globe": "",
     "network": "", "down": "", "up": "", "add": "",
-    "pc": "", "phone": "", "tv": "", "laptop": "",
+    "pc": "", "phone": "", "tv": "", "laptop": "",
     "tablet": "", "other": "", "block": "", "router": "",
     "arrow_down": "", "arrow_up": "", "check": "", "cancel": "",
     "search": "", "pie": "", "wifi": "", "alarm": "",
