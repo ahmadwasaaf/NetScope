@@ -2,7 +2,7 @@
 import json
 import os
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 try:
@@ -34,6 +34,10 @@ class Settings:
     pc_monitor: bool = True       # real bytes per website for this PC (Npcap)
     dns_monitor: bool = False     # rank websites of other devices (DNS on this PC)
     sites_tab: str = "pc"         # "pc" | "others"
+    alarm_gb: float = 0.0         # Windows notification when usage reaches this (0 = off)
+    alarm_fired: str = ""         # "<start>|<gb>" already notified – never repeat
+    autostart: bool = True        # start with Windows (runs in the tray)
+    router_open: bool = False
     host: str = "192.168.1.1"
     port: int = 22
     username: str = "admin"
@@ -59,8 +63,12 @@ class Settings:
 
     # ---------- load / save ----------
     @property
-    def start(self) -> date:
-        return date.fromisoformat(self.start_date)
+    def start(self) -> datetime:
+        """Start of counting: a whole day ("2026-11-20") or an exact moment ("2026-11-22T16:20")."""
+        try:
+            return datetime.fromisoformat(self.start_date)
+        except ValueError:
+            return datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     @classmethod
     def load(cls) -> "Settings":

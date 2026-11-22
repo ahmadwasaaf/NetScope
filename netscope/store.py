@@ -1,14 +1,22 @@
 """SQLite usage store.
 
-Backends report *deltas* (bytes transferred since the previous poll). The store adds
-those deltas into per-day buckets, so the totals "since the start date" are always a
-simple SUM over days >= start_date – changing the start date is instant.
+Backends report *deltas* (bytes since the previous poll). The store adds them into
+per-minute buckets, so "usage since the start moment" is a SUM over buckets >= start –
+changing the start date (or restarting "from now") is instant and exact to the minute.
 """
 import sqlite3
-from datetime import date
-from typing import Dict, Iterable, Tuple
+from datetime import date, datetime
+from typing import Dict, Iterable, Tuple, Union
 
 from .settings import data_dir
+
+Moment = Union[date, datetime]
+
+
+def bucket(t: Moment) -> str:
+    if isinstance(t, datetime):
+        return t.strftime("%Y-%m-%dT%H:%M")
+    return t.isoformat() + "T00:00"
 
 
 class UsageStore:
@@ -21,11 +29,15 @@ class UsageStore:
             CREATE TABLE IF NOT EXISTS devices(
                 mac TEXT PRIMARY KEY, name TEXT, ip TEXT, dtype TEXT);
         """)
+        # older versions stored whole days ("2026-11-20") -> start of that day
+        self.db.execute("UPDATE OR IGNORE usage SET day = day || 'T00:00' WHERE length(day) = 10")
+        self.db.commit()
 
-    # kind = "dev" (key = MAC) or "site" (key = domain)
-    def add(self, kind: str, deltas: Dict[str, int], day: date = None) -> None:
-        d = (day or date.today()).isoformat()
-        rows = [(d, kind, k, int(v)) for k, v in deltas.items() if v > 0]
+    # kind: "dev" (key MAC) · "site" (router per-site) · "wan" · "pcsite" (this PC, bytes)
+    #       "devsite" (key "mac|site", DNS activity per device)
+    def add(self, kind: str, deltas: Dict[str, int], when: datetime = None) -> None:
+        b = bucket(when or datetime.now())
+        rows = [(b, kind, k, int(v)) for k, v in deltas.items() if v > 0]
         self.db.executemany("""
             INSERT INTO usage(day, kind, key, bytes) VALUES(?,?,?,?)
             ON CONFLICT(day, kind, key) DO UPDATE SET bytes = bytes + excluded.bytes
@@ -42,10 +54,10 @@ class UsageStore:
     def device_meta(self) -> Dict[str, Tuple[str, str, str]]:
         return {m: (n, ip, t) for m, n, ip, t in self.db.execute("SELECT mac, name, ip, dtype FROM devices")}
 
-    def totals(self, kind: str, since: date) -> Dict[str, int]:
+    def totals(self, kind: str, since: Moment) -> Dict[str, int]:
         cur = self.db.execute(
             "SELECT key, SUM(bytes) FROM usage WHERE kind=? AND day>=? GROUP BY key",
-            (kind, since.isoformat()))
+            (kind, bucket(since)))
         return {k: int(v) for k, v in cur}
 
     def is_empty(self) -> bool:

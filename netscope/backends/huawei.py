@@ -376,6 +376,22 @@ class HuaweiBackend(RouterBackend):
         self.delta = CounterDelta()
         self.t_last = None
 
+    def _line_rate(self):
+        """(down kbps, up kbps) the DSL line synced at, from the router's DSL page."""
+        try:
+            js = self.s.get("html/ssmp/deviceinfo/dslinfo.asp", expect="DSLInfo")
+        except Exception:
+            return None, None
+        for o in parse_js_objects(js, "DSLInfo"):
+            try:
+                down = float(_field(o, "DownstreamCurrRate") or 0)
+                up = float(_field(o, "UpstreamCurrRate") or 0)
+            except ValueError:
+                continue
+            if down > 0:
+                return down, up
+        return None, None
+
     def _find_wan_page(self):
         queue = [(p, "") for p in WAN_STAT_PAGES] + [("index.asp", "")]
         seen = set()
@@ -466,6 +482,8 @@ class HuaweiBackend(RouterBackend):
         self.wan_page = self._find_wan_page()
         if self.wan_page:
             self.capabilities |= {Cap.TOTAL_USAGE, Cap.LIVE_SPEED}
+        if self._line_rate()[0]:
+            self.capabilities.add(Cap.LINE_RATE)
         if self._mac_filter_page():
             self.capabilities.add(Cap.DEVICE_BLOCK)
         if self._parental() is not None:
@@ -509,8 +527,19 @@ class HuaweiBackend(RouterBackend):
                 rx, tx = wan_counters(self.s.get(self.wan_page, expect="Bytes"), self.wan_context) or (None, None)
                 if rx is not None:
                     now = time.monotonic()
+                    first = "rx" not in self.delta.prev
+                    if first:                     # resume from the counters saved last time
+                        saved = self._state_get("wan_counters") or {}
+                        if "rx" in saved and "tx" in saved:
+                            self.delta.prev.update(rx=int(saved["rx"]), tx=int(saved["tx"]))
                     d_rx, d_tx = self.delta("rx", rx, wrap32=True), self.delta("tx", tx, wrap32=True)
-                    snap.wan_delta = d_rx + d_tx
+                    if first and "rx" in self.delta.prev:
+                        snap.catch_up_bytes = d_rx + d_tx
+                        d_rx = d_tx = 0           # counted as catch-up, not as live speed
+                    snap.wan_delta = d_rx + d_tx + snap.catch_up_bytes
+                    if time.monotonic() - getattr(self, "_saved_at", 0) > 30 or first:
+                        self._state_set("wan_counters", {"rx": rx, "tx": tx, "t": time.time()})
+                        self._saved_at = time.monotonic()
                     if self.t_last:
                         dt = now - self.t_last
                         snap.down_bps, snap.up_bps = d_rx / dt, d_tx / dt
@@ -543,6 +572,8 @@ class HuaweiBackend(RouterBackend):
             if Cap.SITE_BLOCK in self.capabilities:
                 st = self._parental()
                 self._cache_sites = set(st.urls) if st else set()
+            self._cache_line = self._line_rate()
+        snap.line_down_kbps, snap.line_up_kbps = getattr(self, "_cache_line", (None, None))
         snap.blocked_macs = set(getattr(self, "_cache_macs", set()))
         snap.blocked_domains = set(getattr(self, "_cache_sites", set()))
         return snap

@@ -1,11 +1,11 @@
 """Start-date picker and Settings dialog."""
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
-from PySide6.QtWidgets import (QCalendarWidget, QColorDialog, QComboBox, QDialog,
+from PySide6.QtWidgets import (QCalendarWidget, QCheckBox, QColorDialog, QComboBox, QDialog,
                                QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
                                QMessageBox, QPushButton, QSpinBox, QTabWidget,
                                QVBoxLayout, QWidget)
@@ -49,9 +49,13 @@ def desktop_dir() -> Path:
 
 
 class DateDialog(QDialog):
-    def __init__(self, tr: Translator, current: date, parent=None):
+    """Pick the start of counting. Today (or "Start from now") = from this very minute,
+    an earlier day = from that day's 00:00."""
+
+    def __init__(self, tr: Translator, current, parent=None):
         super().__init__(parent)
         self.setWindowTitle(tr("pick_start"))
+        self.result_value = None
         v = QVBoxLayout(self)
         self.cal = QCalendarWidget()
         self.cal.setGridVisible(False)
@@ -59,7 +63,14 @@ class DateDialog(QDialog):
         self.cal.setMaximumDate(QDate.currentDate())
         self.cal.setSelectedDate(QDate(current.year, current.month, current.day))
         v.addWidget(self.cal)
+        hint = QLabel(tr("start_hint"))
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
         row = QHBoxLayout()
+        now_btn = QPushButton(tr("start_now"))
+        now_btn.clicked.connect(self._now)
+        row.addWidget(now_btn)
         row.addStretch(1)
         cancel = QPushButton(tr("cancel"))
         ok = QPushButton(tr("ok"))
@@ -70,9 +81,18 @@ class DateDialog(QDialog):
         row.addWidget(ok)
         v.addLayout(row)
 
-    def value(self) -> date:
+    def _now(self):
+        self.result_value = datetime.now().replace(second=0, microsecond=0)
+        self.accept()
+
+    def value(self) -> datetime:
+        if self.result_value:
+            return self.result_value
         d = self.cal.selectedDate()
-        return date(d.year(), d.month(), d.day())
+        picked = date(d.year(), d.month(), d.day())
+        if picked >= date.today():
+            return datetime.now().replace(second=0, microsecond=0)
+        return datetime(picked.year, picked.month, picked.day)
 
 
 class Swatch(QPushButton):
@@ -134,6 +154,9 @@ class SettingsDialog(QDialog):
         np_w = QWidget()
         np_w.setLayout(np_row)
         gf.addRow("Npcap", np_w)
+        self.autostart = QCheckBox(tr("autostart"))
+        self.autostart.setChecked(self.s.autostart)
+        gf.addRow("", self.autostart)
         tabs.addTab(g, tr("general"))
 
         # ---------------- Router
@@ -243,5 +266,6 @@ class SettingsDialog(QDialog):
         s.language = self.lang.currentData()
         s.theme = self.theme.currentData()
         s.quota_gb = self.quota.value()
+        s.autostart = self.autostart.isChecked()
         s.refresh_sec = self.refresh.value()
         return s

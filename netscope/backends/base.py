@@ -24,7 +24,8 @@ class Cap:
     DEVICE_BLOCK = "device_block"    # cut / restore internet per device
     SITE_USAGE = "site_usage"
     SITE_BLOCK = "site_block"
-    ALL = {TOTAL_USAGE, LIVE_SPEED, DEVICE_LIST, DEVICE_USAGE, DEVICE_BLOCK, SITE_USAGE, SITE_BLOCK}
+    LINE_RATE = "line_rate"          # the line's own speed (e.g. DSL sync rate)
+    ALL = {TOTAL_USAGE, LIVE_SPEED, DEVICE_LIST, DEVICE_USAGE, DEVICE_BLOCK, SITE_USAGE, SITE_BLOCK, LINE_RATE}
 
 
 def clean_mac(mac: str) -> str:
@@ -65,8 +66,11 @@ class Snapshot:
     device_deltas: Dict[str, int] = field(default_factory=dict)   # mac -> bytes since last poll
     site_deltas: Dict[str, int] = field(default_factory=dict)     # domain -> bytes since last poll
     wan_delta: Optional[int] = None                               # whole line, bytes since last poll
-    down_bps: Optional[float] = None                              # bytes / second
+    down_bps: Optional[float] = None                              # bytes / second (in use now)
     up_bps: Optional[float] = None
+    line_down_kbps: Optional[float] = None                        # line speed the router synced at
+    line_up_kbps: Optional[float] = None
+    catch_up_bytes: int = 0                                       # used while NetScope was closed
     blocked_macs: Set[str] = field(default_factory=set)
     blocked_domains: Set[str] = field(default_factory=set)
     router_name: str = ""
@@ -138,6 +142,6 @@ class CounterDelta:
             return 0
         if value >= prev:
             return value - prev
-        if wrap32 and prev > 2 ** 31:
+        if wrap32 and 2 ** 31 < prev < 2 ** 32:      # a 32-bit counter rolled over
             return value + 2 ** 32 - prev
         return value          # counter restarted from zero

@@ -29,6 +29,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: UI smoke test (demo router, offscreen)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tests/smoke_ui.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: screens/*.png
+
       - name: Build NetScope.exe
         run: >
           pyinstaller --noconfirm --clean --onefile --windowed

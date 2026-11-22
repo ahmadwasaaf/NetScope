@@ -5,3 +5,4 @@ dist/
 *.spec
 NetScope.exe
 NetScope-Setup.exe
+screens/

@@ -1,32 +1,41 @@
-"""NetScope main window – responsive: two columns on wide windows, one column on narrow."""
+"""NetScope main window – one column of cards and expandable sections:
+
+    header (name · Live · settings)
+    usage gauge · line-speed tiles · Start date / Bundle / Alarm me
+    ▸ Router                                  (expandable)
+    ▸ Connected Devices & Website Usage       (expandable; each device expands to its sites)
+
+Closing the window keeps NetScope running in the tray; it starts with Windows and, when it
+was not running, adds the usage the router counted meanwhile.
+"""
 import ctypes
 import re
 import sys
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QGuiApplication
-from PySide6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout,
-                               QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox,
-                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtGui import QAction, QGuiApplication, QIcon
+from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QInputDialog, QLabel,
+                               QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
+                               QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget)
 
 from .. import APP_NAME, APP_VERSION
-from ..backends import Cap, Snapshot, clean_domain, create_backend
+from ..backends import Cap, Snapshot, clean_domain, create_backend, detect
 from ..i18n import Translator
-from ..backends import detect
+from ..monitor.dnsmon import DnsMonitor
+from ..monitor.pcap import UNRESOLVED, PcMonitor, _primary_ipv4
 from ..poller import Poller, Task
 from ..settings import Settings, data_dir
 from ..store import UsageStore
 from ..theme import make_palette, stylesheet
 from .dialogs import DateDialog, SettingsDialog
-from ..monitor.dnsmon import DnsMonitor
-from ..monitor.pcap import UNRESOLVED, PcMonitor, _primary_ipv4
-from .widgets import (GLYPH, CollapsibleSection, Gauge, Segmented, SpeedTile, Toast, UsageRow,
+from .widgets import (GLYPH, CollapsibleSection, DeviceCard, Gauge, SpeedTile, Toast,
                       icon_button, icon_label)
 from .wizard import SetupWizard, caps_widget
 
-WIDE = 1000
 INVERSE = {"block_device": "unblock_device", "unblock_device": "block_device",
            "block_domain": "unblock_domain", "unblock_domain": "block_domain"}
+BLOCKED_KEY = "__blocked_sites__"
+GB = 1024 ** 3
 
 
 def set_dark_titlebar(win, dark: bool):
@@ -43,8 +52,28 @@ def set_dark_titlebar(win, dark: bool):
         pass
 
 
+def set_autostart(enabled: bool):
+    """Start with Windows (current user) – only for the installed / built NetScope.exe."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+        if enabled:
+            winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'"{sys.executable}" --minimized')
+        else:
+            try:
+                winreg.DeleteValue(key, APP_NAME)
+            except OSError:
+                pass
+        winreg.CloseKey(key)
+    except OSError:
+        pass
+
+
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, start_hidden: bool = False):
         super().__init__()
         self.s = Settings.load()
         self.poller = None
@@ -53,9 +82,12 @@ class MainWindow(QMainWindow):
         self.caps = set()
         self.blocked_macs: set = set()
         self.blocked_domains: set = set()
-        self.wide = None
-        self.resize(1120, 780)
-        self.setMinimumWidth(480)
+        self.open_devices: set = set()
+        self.cards = {}
+        self._quitting = False
+        self._tray_hint_shown = False
+        self.resize(600, 940)
+        self.setMinimumWidth(520)
         self._open_store()
         self._apply_look()
         self.pc_mon = PcMonitor()               # monitors live for the whole app run
@@ -65,10 +97,14 @@ class MainWindow(QMainWindow):
         if self.s.dns_monitor:
             self._start_dns()
         self._build()
+        self._setup_tray()
+        set_autostart(self.s.autostart)
         self._start_poller()
         self.mon_timer = QTimer(self)
         self.mon_timer.timeout.connect(self._collect_monitors)
         self.mon_timer.start(2000)
+        if not start_hidden:
+            self.show()
         if not self.s.onboarded:
             QTimer.singleShot(250, self._run_wizard)
         elif self.s.backend == "generic":
@@ -97,13 +133,48 @@ class MainWindow(QMainWindow):
         self.poller.snapshot.connect(self._on_snapshot)
         self.poller.action_done.connect(self._on_action_done)
 
+    # ================================================================ tray / background
+    def _setup_tray(self):
+        self.tray = None
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        icon = QApplication.instance().windowIcon()
+        self.tray = QSystemTrayIcon(icon if not icon.isNull() else QIcon(), self)
+        self.tray.setToolTip(APP_NAME)
+        menu = QMenu()
+        self._tray_open = QAction(self.tr("tray_open"), menu)
+        self._tray_open.triggered.connect(self.show_from_tray)
+        self._tray_quit = QAction(self.tr("tray_quit"), menu)
+        self._tray_quit.triggered.connect(self.quit_app)
+        menu.addAction(self._tray_open)
+        menu.addSeparator()
+        menu.addAction(self._tray_quit)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(
+            lambda r: self.show_from_tray() if r in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick) else None)
+        self.tray.show()
+
+    def show_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def notify(self, title: str, text: str):
+        if self.tray:
+            self.tray.showMessage(title, text, QSystemTrayIcon.Information, 10000)
+
+    def quit_app(self):
+        self._quitting = True
+        self.close()
+        QApplication.instance().quit()
+
     # ================================================================ layout
     def _build(self):
         root = QWidget()
         root.setObjectName("Root")
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(16, 14, 16, 0)
+        outer.setContentsMargins(14, 14, 14, 0)
         outer.setSpacing(12)
         outer.addWidget(self._header())
 
@@ -114,71 +185,54 @@ class MainWindow(QMainWindow):
         body = QWidget()
         body.setObjectName("ScrollBody")
         scroll.setWidget(body)
-        self.grid = QGridLayout(body)
-        self.grid.setContentsMargins(0, 0, 0, 16)
-        self.grid.setHorizontalSpacing(14)
-        self.grid.setVerticalSpacing(12)
+        col = QVBoxLayout(body)
+        col.setContentsMargins(0, 0, 0, 16)
+        col.setSpacing(12)
+        col.addWidget(self._gauge_card())
 
-        self.left = QWidget()
-        lv = QVBoxLayout(self.left)
-        lv.setContentsMargins(0, 0, 0, 0)
-        lv.setSpacing(12)
-        lv.addWidget(self._gauge_card())
-        lv.addWidget(self._router_card())
-        lv.addStretch(1)
+        # ---- router (expandable)
+        self.router_section = CollapsibleSection(self.tr("router"), "wifi", self.p, open_=self.s.router_open)
+        self.router_section.toggled.connect(lambda o: self._remember("router_open", o))
+        self.router_box = QWidget()
+        rv = QVBoxLayout(self.router_box)
+        rv.setContentsMargins(10, 0, 10, 4)
+        self.router_ip = QLabel()
+        self.router_ip.setObjectName("Muted")
+        rv.addWidget(self.router_ip)
+        self.line_info = QLabel()
+        self.line_info.setObjectName("Muted")
+        rv.addWidget(self.line_info)
+        works = QLabel(self.tr("what_works"))
+        works.setObjectName("Muted")
+        rv.addSpacing(4)
+        rv.addWidget(works)
+        self.caps_holder = QVBoxLayout()
+        rv.addLayout(self.caps_holder)
+        self._caps_shown = None
+        self.router_section.list.addWidget(self.router_box)
+        col.addWidget(self.router_section)
 
-        self.right = QWidget()
-        rv = QVBoxLayout(self.right)
-        rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(12)
-        self.dev_section = CollapsibleSection(self.tr("connected_devices"), "network", self.p,
+        # ---- devices & websites (expandable)
+        self.dev_section = CollapsibleSection(self.tr("devices_sites"), "network", self.p,
                                               open_=self.s.devices_open,
                                               search_placeholder=self.tr("search_devices"))
+        self.dev_section.badge.setObjectName("CountBadge")
         self.dev_section.toggled.connect(lambda o: self._remember("devices_open", o))
-        self.dev_section.search.textChanged.connect(lambda _: self._refresh_view())
-        rv.addWidget(self.dev_section)
-        self.site_section = CollapsibleSection(self.tr("website_usage"), "globe", self.p,
-                                               badge=self.tr("highest_first"), open_=self.s.sites_open)
+        self.dev_section.search.textChanged.connect(lambda _: self._refresh_devices())
         self.add_site_btn = icon_button("add", 13)
         self.add_site_btn.setToolTip(self.tr("add_site"))
         self.add_site_btn.clicked.connect(self._add_site)
-        self.site_section.extra.addWidget(self.add_site_btn)
-        self.site_section.toggled.connect(lambda o: self._remember("sites_open", o))
-        self.sites_seg = Segmented([("pc", self.tr("this_pc")), ("others", self.tr("other_devices"))],
-                                   self.s.sites_tab)
-        self.sites_seg.changed.connect(self._switch_sites_tab)
-        self.site_section.add_top(self.sites_seg)
-        self.site_section.action_btn.clicked.connect(self._sites_action)
-        rv.addWidget(self.site_section)
-        rv.addStretch(1)
+        self.dev_section.extra.addWidget(self.add_site_btn)
+        self.dev_section.list.setSpacing(8)
+        col.addWidget(self.dev_section)
+        col.addStretch(1)
 
+        self.cards = {}
         self.toast = Toast(root)
-        self.wide = None
-        self._relayout()
         self._refresh_view()
-
-    def _relayout(self):
-        wide = self.width() >= WIDE
-        if wide == self.wide:
-            return
-        self.wide = wide
-        self.grid.removeWidget(self.left)
-        self.grid.removeWidget(self.right)
-        if wide:
-            self.grid.addWidget(self.left, 0, 0)
-            self.grid.addWidget(self.right, 0, 1)
-            self.grid.setColumnStretch(0, 5)
-            self.grid.setColumnStretch(1, 6)
-        else:
-            self.grid.addWidget(self.left, 0, 0)
-            self.grid.addWidget(self.right, 1, 0)
-            self.grid.setColumnStretch(0, 1)
-            self.grid.setColumnStretch(1, 0)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        if hasattr(self, "grid"):
-            self._relayout()
         if hasattr(self, "toast") and self.toast.isVisible():
             self.toast.reposition()
 
@@ -219,7 +273,7 @@ class MainWindow(QMainWindow):
         card.setObjectName("Card")
         v = QVBoxLayout(card)
         v.setContentsMargins(18, 14, 18, 16)
-        v.setSpacing(10)
+        v.setSpacing(12)
         top = QHBoxLayout()
         cap = QLabel(self.tr("total_usage"))
         cap.setObjectName("CardCaption")
@@ -231,14 +285,14 @@ class MainWindow(QMainWindow):
         v.addLayout(top)
         self.gauge = Gauge(self.p)
         self.gauge.caption = self.tr("gb_consumed")
-        v.addWidget(self.gauge, 1)
+        v.addWidget(self.gauge)
 
         self.speed_row = QWidget()
         sr = QHBoxLayout(self.speed_row)
         sr.setContentsMargins(0, 0, 0, 0)
         sr.setSpacing(10)
-        self.down_tile = SpeedTile(self.p, self.tr("download"), "arrow_down")
-        self.up_tile = SpeedTile(self.p, self.tr("upload"), "arrow_up", "#00B8D4")
+        self.down_tile = SpeedTile(self.p, self.tr("download"), "arrow_down", now_label=self.tr("in_use"))
+        self.up_tile = SpeedTile(self.p, self.tr("upload"), "arrow_up", "#00B8D4", now_label=self.tr("in_use"))
         sr.addWidget(self.down_tile)
         sr.addWidget(self.up_tile)
         v.addWidget(self.speed_row)
@@ -246,55 +300,31 @@ class MainWindow(QMainWindow):
         div = QFrame()
         div.setObjectName("Divider")
         v.addWidget(div)
-        bottom = QHBoxLayout()
-        bottom.setSpacing(8)
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
         for text, glyph, slot in ((self.tr("set_date"), "calendar", self._pick_date),
-                                  (self.tr("set_quota"), "pie", self._set_quota)):
+                                  (self.tr("set_quota"), "pie", self._set_quota),
+                                  (self.tr("alarm_me"), "alarm", self._set_alarm)):
             b = QPushButton(f"{text}  {GLYPH[glyph]}")
             b.setObjectName("Ghost")
             b.setStyleSheet("font-family: 'Segoe UI', 'Segoe Fluent Icons', 'Segoe MDL2 Assets';")
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(slot)
-            bottom.addWidget(b)
-        bottom.addStretch(1)
-        dcol = QVBoxLayout()
-        dcol.setSpacing(0)
+            btns.addWidget(b)
+        btns.addStretch(1)
+        v.addLayout(btns)
+        since_row = QHBoxLayout()
         since = QLabel(self.tr("tracking_since"))
         since.setObjectName("Muted")
         self.date_lbl = QLabel()
         self.date_lbl.setObjectName("DateValue")
-        dcol.addWidget(since, 0, Qt.AlignTrailing)
-        dcol.addWidget(self.date_lbl, 0, Qt.AlignTrailing)
-        bottom.addLayout(dcol)
-        v.addLayout(bottom)
-        return card
-
-    def _router_card(self) -> QWidget:
-        card = QFrame()
-        card.setObjectName("Card")
-        v = QVBoxLayout(card)
-        v.setContentsMargins(18, 14, 18, 16)
-        top = QHBoxLayout()
-        ic = icon_label("wifi", 16, "IconTile")
-        ic.setFixedSize(34, 34)
-        top.addWidget(ic)
-        col = QVBoxLayout()
-        col.setSpacing(0)
-        self.router_name = QLabel()
-        self.router_name.setObjectName("SectionTitle")
-        self.router_ip = QLabel()
-        self.router_ip.setObjectName("Muted")
-        col.addWidget(self.router_name)
-        col.addWidget(self.router_ip)
-        top.addLayout(col, 1)
-        v.addLayout(top)
-        lbl = QLabel(self.tr("what_works"))
-        lbl.setObjectName("Muted")
-        v.addSpacing(6)
-        v.addWidget(lbl)
-        self.caps_holder = QVBoxLayout()
-        v.addLayout(self.caps_holder)
-        self._caps_shown = None
+        self.alarm_lbl = QLabel()
+        self.alarm_lbl.setObjectName("Muted")
+        since_row.addWidget(since)
+        since_row.addWidget(self.date_lbl)
+        since_row.addStretch(1)
+        since_row.addWidget(self.alarm_lbl)
+        v.addLayout(since_row)
         return card
 
     # ================================================================ data
@@ -308,13 +338,18 @@ class MainWindow(QMainWindow):
             self.store.add("site", snap.site_deltas)
             if snap.wan_delta:
                 self.store.add("wan", {"wan": snap.wan_delta})
+            if snap.catch_up_bytes > 1024 * 1024:
+                msg = self.tr("catch_up", gb=f"{snap.catch_up_bytes / GB:,.2f}")
+                self.toast.show_message(msg, ms=12000)
+                if not self.isVisible():
+                    self.notify(APP_NAME, msg)
             if Cap.DEVICE_BLOCK in self.caps:
                 self.blocked_macs = set(snap.blocked_macs)
             if Cap.SITE_BLOCK in self.caps:
                 self.blocked_domains = set(snap.blocked_domains)
-            if Cap.LIVE_SPEED in self.caps:
-                self.down_tile.set_speed(snap.down_bps)
-                self.up_tile.set_speed(snap.up_bps)
+            if Cap.LIVE_SPEED in self.caps or Cap.LINE_RATE in self.caps:
+                self.down_tile.set_values(snap.line_down_kbps, snap.down_bps)
+                self.up_tile.set_values(snap.line_up_kbps, snap.up_bps)
         self._refresh_view()
 
     def _display_name(self, mac, router_name):
@@ -323,10 +358,16 @@ class MainWindow(QMainWindow):
             return self.tr("unknown_device")
         return name
 
+    def _used_bytes(self) -> int:
+        start, caps = self.s.start, self.caps
+        wan_total = self.store.totals("wan", start).get("wan", 0)
+        if Cap.TOTAL_USAGE in caps and wan_total:
+            return wan_total
+        return sum(self.store.totals("dev", start).values())
+
     def _refresh_view(self):
-        tr, start, caps = self.tr, self.s.start, self.caps
+        tr, caps = self.tr, self.caps
         online = self.snap.online
-        # ---- status chip
         if online:
             self.status.setObjectName("LiveBadge")
             self.status.setText(f"●  {tr('monitoring')}")
@@ -340,33 +381,14 @@ class MainWindow(QMainWindow):
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
         self.note.setVisible(self.s.backend == "demo")
-        self.date_lbl.setText(tr.date(start))
-        self.speed_row.setVisible(Cap.LIVE_SPEED in caps)
+        self.date_lbl.setText(tr.date(self.s.start))
+        self.alarm_lbl.setText(tr("alarm_at", gb=f"{self.s.alarm_gb:,.0f}") if self.s.alarm_gb else "")
+        self.speed_row.setVisible(bool({Cap.LIVE_SPEED, Cap.LINE_RATE} & caps))
 
-        # ---- router card
-        self.router_name.setText(self.snap.router_name or self.s.router_label or tr("router"))
-        self.router_ip.setText(self.s.host if self.s.backend != "demo" else tr("demo_note"))
-        if self._caps_shown != caps:
-            self._caps_shown = set(caps)
-            while self.caps_holder.count():
-                w = self.caps_holder.takeAt(0).widget()
-                if w:
-                    w.deleteLater()
-            self.caps_holder.addWidget(caps_widget(tr, caps))
-
-        # ---- devices
-        meta = self.store.device_meta()
-        dev_tot = self.store.totals("dev", start)
-        live = {d.mac: d for d in self.snap.devices}
-        macs = {m for m in set(dev_tot) | set(live) | self.blocked_macs if m in meta}
-        has_usage = Cap.DEVICE_USAGE in caps
-
-        wan_total = self.store.totals("wan", start).get("wan", 0)
-        dev_sum = sum(dev_tot.get(m, 0) for m in macs)
-        total = wan_total if (Cap.TOTAL_USAGE in caps and wan_total) else dev_sum
+        # ---- gauge + bundle + alarm
+        used_gb = self._used_bytes() / GB
         q = self.s.quota_gb
         self.gauge.quota_gb = q
-        used_gb = total / 1024 ** 3
         if q > 0:
             self.gauge.caption = tr("of_quota", q=f"{q:,.0f}")
             left = q - used_gb
@@ -375,47 +397,131 @@ class MainWindow(QMainWindow):
         else:
             self.gauge.caption, self.gauge.subcaption = tr("gb_consumed"), ""
         self.gauge.animate_to(used_gb)
+        self._check_alarm(used_gb)
 
+        # ---- router
+        self.router_section.badge.setText(self.snap.router_name or self.s.router_label or "")
+        self.router_ip.setText(self.s.host if self.s.backend != "demo" else tr("demo_note"))
+        if self.snap.line_down_kbps:
+            self.line_info.setText(tr("line_info", d=f"{self.snap.line_down_kbps / 1000:,.1f}",
+                                      u=f"{(self.snap.line_up_kbps or 0) / 1000:,.1f}"))
+            self.line_info.show()
+        else:
+            self.line_info.hide()
+        if self._caps_shown != caps:
+            self._caps_shown = set(caps)
+            while self.caps_holder.count():
+                w = self.caps_holder.takeAt(0).widget()
+                if w:
+                    w.deleteLater()
+            self.caps_holder.addWidget(caps_widget(tr, caps))
+
+        self._refresh_devices()
+
+    # ---------------------------------------------------------------- devices & sites
+    def _this_pc_mac(self, meta, live):
+        ips = {_primary_ipv4()}
+        if self.pc_mon.acct:
+            ips |= self.pc_mon.acct.local_ips
+        for mac, d in live.items():
+            if d.ip in ips:
+                return mac
+        for mac, (_, ip, _) in meta.items():
+            if ip in ips:
+                return mac
+        return None
+
+    def _refresh_devices(self):
+        tr, start, caps = self.tr, self.s.start, self.caps
+        meta = self.store.device_meta()
+        live = {d.mac: d for d in self.snap.devices}
+        dev_tot = self.store.totals("dev", start)
+        pc_sites = self.store.totals("pcsite", start)
+        dns_sites = self.store.totals("devsite", start)
+        pc_mac = self._this_pc_mac(meta, live)
+        has_dev_usage = Cap.DEVICE_USAGE in caps
+
+        macs = {m for m in set(dev_tot) | set(live) | self.blocked_macs if m in meta}
+        if pc_mac:
+            macs.add(pc_mac)
         query = self.dev_section.search.text().strip().lower()
         if query:
-            macs = {m for m in macs if query in self._display_name(m, meta[m][0]).lower()
-                    or query in meta[m][1] or query in m}
-        is_on = lambda m: m in live and live[m].online
-        order = sorted(macs, key=lambda m: (m in self.blocked_macs, -dev_tot.get(m, 0), not is_on(m),
-                                            self._display_name(m, meta[m][0]).lower()))
-        peak = max([dev_tot.get(m, 0) for m in macs] + [1])
+            macs = {m for m in macs if query in self._display_name(m, meta.get(m, ("",))[0]).lower()
+                    or query in meta.get(m, ("", "", ""))[1] or query in m}
 
-        def make_dev(mac):
-            dtype = meta[mac][2] if meta[mac][2] in GLYPH else "other"
-            row = UsageRow(mac, self.p, icon=dtype)
-            row.context.connect(self._device_menu)
-            row.activated.connect(self._rename)
-            return row
+        def usage(m):
+            if m == pc_mac and pc_sites:
+                return sum(pc_sites.values())
+            return dev_tot.get(m, 0) if has_dev_usage else 0
 
-        self.dev_section.set_rows(order, make_dev)
-        for mac in order:
-            name, ip, _ = meta[mac]
-            used = dev_tot.get(mac, 0) if has_usage else None
-            sub = ip if is_on(mac) else f"{ip} · {tr('offline_dev')}"
-            if self._display_name(mac, name) == tr("unknown_device"):
-                sub = f"{sub} · {mac.upper()}"
-            self.dev_section.rows[mac].set_data(self._display_name(mac, name), sub, used,
-                                                (used or 0) / peak, mac in self.blocked_macs,
-                                                tr("blocked"), online=is_on(mac))
-        self.dev_section.badge.setText(f"{tr('devices')} {len(order)}")
+        is_on = lambda m: (m in live and live[m].online) or m == pc_mac
+        order = sorted(macs, key=lambda m: (m in self.blocked_macs, m != pc_mac, not is_on(m), -usage(m),
+                                            self._display_name(m, meta.get(m, ("",))[0]).lower()))
+        keys = list(order)
+        if Cap.SITE_BLOCK in caps and self.blocked_domains:
+            keys.append(BLOCKED_KEY)
+        self._sync_cards(keys, meta)
+
+        for m in order:
+            name, ip, _ = meta.get(m, ("", "", ""))
+            card = self.cards[m]
+            label = self._display_name(m, name)
+            sub = ip
+            if m == pc_mac:
+                label = f"{label}  ·  {tr('this_pc')}"
+            elif label == tr("unknown_device"):
+                sub = f"{ip} · {m.upper()}"
+            u = usage(m)
+            usage_text = f"{u / GB:,.2f} GB" if (u and (m == pc_mac or has_dev_usage)) else ""
+            card.set_header(label, sub, is_on(m), tr("online") if is_on(m) else tr("offline_dev"),
+                            usage_text, m in self.blocked_macs, tr("blocked"))
+            if card.is_open:
+                self._fill_sites(card, m, m == pc_mac, pc_sites, dns_sites)
+
+        if BLOCKED_KEY in self.cards:
+            card = self.cards[BLOCKED_KEY]
+            card.set_header(tr("blocked_sites"), "", None, "", str(len(self.blocked_domains)), False, "")
+            if card.is_open:
+                items = [(d, d, None, 0, True, tr("blocked"), f"{i:02d}")
+                         for i, d in enumerate(sorted(self.blocked_domains), 1)]
+                card.set_sites(items)
+        self.dev_section.badge.setText(f"{len(order)}  {tr('devices_word')}")
         self.dev_section.set_empty("" if order or not self.connected_once else tr("no_data"))
 
-        # ---- websites (This PC: real GB  |  Other devices: ranked names)
-        self._refresh_sites()
+    def _sync_cards(self, keys, meta):
+        for k in list(self.cards):
+            if k not in keys:
+                self.cards.pop(k).deleteLater()
+        for k in keys:
+            if k not in self.cards:
+                if k == BLOCKED_KEY:
+                    icon = "block"
+                else:
+                    t = meta.get(k, ("", "", "other"))[2]
+                    icon = t if t in GLYPH else "other"
+                card = DeviceCard(k, self.p, icon, open_=k in self.open_devices)
+                card.toggled.connect(self._card_toggled)
+                card.site_context.connect(self._site_menu)
+                card.action.connect(self._card_action)
+                if k != BLOCKED_KEY:
+                    card.context.connect(self._device_menu)
+                    card.activated.connect(self._rename)
+                self.cards[k] = card
+        lay = self.dev_section.list
+        while lay.count():
+            lay.takeAt(0)
+        for k in keys:
+            lay.addWidget(self.cards[k])
 
-    def _refresh_sites(self):
-        tr, start, caps = self.tr, self.s.start, self.caps
-        tab = self.s.sites_tab
-        self.add_site_btn.setVisible(Cap.SITE_BLOCK in caps)
+    def _card_toggled(self, key, is_open):
+        (self.open_devices.add if is_open else self.open_devices.discard)(key)
+        self._refresh_devices()
+
+    def _fill_sites(self, card, mac, is_pc, pc_sites, dns_sites):
+        tr = self.tr
         empty, action = "", ""
-        if tab == "pc":
-            totals = self.store.totals("pcsite", start)
-            show_bytes = True
+        if is_pc:
+            totals, show_bytes = pc_sites, True
             st = self.pc_mon.status
             if not self.s.pc_monitor:
                 empty, action = tr("pc_off"), tr("enable")
@@ -426,53 +532,40 @@ class MainWindow(QMainWindow):
             elif not totals:
                 empty = tr("pc_waiting")
         else:
-            if Cap.SITE_USAGE in caps:                   # router reports bytes itself (OpenWrt)
-                totals, show_bytes = self.store.totals("site", start), True
-            else:
-                totals, show_bytes = self.store.totals("dnssite", start), False
-                mon = self.dns_mon
-                if mon is None:
-                    empty, action = tr("dns_intro"), tr("dns_enable")
-                elif mon.status.startswith("error:"):
-                    empty, action = tr("dns_error", err=mon.status[6:]), tr("retry")
-                elif not totals and not mon.receiving:
-                    empty = tr("dns_setup", ip=_primary_ipv4() or "?", gw=self.s.host) + "<br><br>" + \
-                        tr("dns_status", n=mon.total_queries, d=len(mon.clients))
-        sites = set(totals) | (self.blocked_domains if Cap.SITE_BLOCK in caps else set())
-        order = sorted(sites, key=lambda d: (d in self.blocked_domains, d == UNRESOLVED, -totals.get(d, 0), d))
-        if empty and not totals:
-            order = sorted(self.blocked_domains) if Cap.SITE_BLOCK in caps else []
-        peak = max([totals.get(d, 0) for d in sites] + [1])
-
-        def make_site(domain):
-            row = UsageRow(domain, self.p)
-            row.context.connect(self._site_menu)
-            return row
-
-        self.site_section.set_rows(order, make_site)
+            prefix = mac + "|"
+            totals = {k[len(prefix):]: v for k, v in dns_sites.items() if k.startswith(prefix)}
+            show_bytes = False
+            mon = self.dns_mon
+            if mon is None:
+                empty, action = tr("dns_intro"), tr("dns_enable")
+            elif mon.status.startswith("error:"):
+                empty, action = tr("dns_error", err=mon.status[6:]), tr("retry")
+            elif not totals and not mon.receiving:
+                empty = tr("dns_setup", ip=_primary_ipv4() or "?", gw=self.s.host) + "<br><br>" + \
+                    tr("dns_status", n=mon.total_queries, d=len(mon.clients))
+            elif not totals:
+                empty = tr("no_sites_yet")
+        order = sorted(totals, key=lambda d: (d in self.blocked_domains, d == UNRESOLVED, -totals[d], d))[:60]
+        peak = max([totals[d] for d in order] + [1])
+        items = []
         for i, d in enumerate(order, 1):
-            used = totals.get(d, 0) if show_bytes else None
             label = tr("unresolved") if d == UNRESOLVED else d
-            self.site_section.rows[d].set_data(label, "", used, (used or 0) / peak, d in self.blocked_domains,
-                                               tr("blocked"), index=f"{i:02d}")
-        self.site_section.badge.setText(tr("highest_first") if show_bytes else tr("most_active_first"))
-        self.site_section.set_empty(empty, action)
+            used = totals[d] if show_bytes else None
+            items.append((d, label, used, (used or 0) / peak, d in self.blocked_domains, tr("blocked"), f"{i:02d}"))
+        card.set_sites(items, empty, action)
 
-    def _switch_sites_tab(self, tab):
-        self._remember("sites_tab", tab)
-        self._refresh_sites()
-
-    def _sites_action(self):
-        if self.s.sites_tab == "pc" and self.pc_mon.status == "no_npcap":
-            self._save_npcap_installer()
-            return
-        if self.s.sites_tab == "pc":
+    def _card_action(self, key):
+        mac_is_pc = key == self._this_pc_mac(self.store.device_meta(), {d.mac: d for d in self.snap.devices})
+        if mac_is_pc:
+            if self.pc_mon.status == "no_npcap":
+                self._save_npcap_installer()
+                return
             self._remember("pc_monitor", True)
             self.pc_mon.start()
         else:
             self._remember("dns_monitor", True)
             self._start_dns()
-        self._refresh_sites()
+        self._refresh_devices()
 
     def _save_npcap_installer(self):
         from ..monitor.npcap_installer import write_installer
@@ -502,12 +595,38 @@ class MainWindow(QMainWindow):
             self.store.add("pcsite", d)
             changed = True
         if self.dns_mon:
-            d = self.dns_mon.drain()
-            if d:
-                self.store.add("dnssite", d)
+            counts = self.dns_mon.drain()
+            if counts:
+                ip_to_mac = {dev.ip: dev.mac for dev in self.snap.devices}
+                for (ip, site), n in counts.items():
+                    mac = ip_to_mac.get(ip)
+                    if mac:
+                        self.store.add("devsite", {f"{mac}|{site}": n})
                 changed = True
-        if changed or self.site_section.empty.isVisible():
-            self._refresh_sites()
+        if changed and self.isVisible():
+            self._refresh_devices()
+
+    # ================================================================ alarm
+    def _alarm_key(self):
+        return f"{self.s.start_date}|{self.s.alarm_gb}"
+
+    def _check_alarm(self, used_gb):
+        a = self.s.alarm_gb
+        if a > 0 and used_gb >= a and self.s.alarm_fired != self._alarm_key():
+            self.s.alarm_fired = self._alarm_key()
+            self.s.save()
+            msg = self.tr("alarm_msg", used=f"{used_gb:,.2f}", gb=f"{a:,.0f}")
+            self.notify(self.tr("alarm_title"), msg)
+            self.toast.show_message(msg, ms=15000)
+
+    def _set_alarm(self):
+        val, ok = QInputDialog.getDouble(self, APP_NAME, self.tr("alarm_prompt"), self.s.alarm_gb, 0, 100000, 1)
+        if ok:
+            self.s.alarm_gb = val
+            self.s.save()
+            self._refresh_view()
+            if val and not self.tray:
+                self.toast.show_message(self.tr("no_tray"), error=True)
 
     # ================================================================ actions
     def _menu(self) -> QMenu:
@@ -547,7 +666,7 @@ class MainWindow(QMainWindow):
     def _rename(self, mac):
         meta = self.store.device_meta().get(mac, (mac, "", ""))
         text, ok = QInputDialog.getText(self, APP_NAME, self.tr("rename_prompt"),
-                                        text=self._display_name(mac, meta[0]))
+                                        QLineEdit.Normal, self._display_name(mac, meta[0]))
         if ok:
             if text.strip() and text.strip() != meta[0]:
                 self.s.nicknames[mac] = text.strip()
@@ -603,7 +722,7 @@ class MainWindow(QMainWindow):
     def _pick_date(self):
         dlg = DateDialog(self.tr, self.s.start, self)
         if dlg.exec():
-            self.s.start_date = dlg.value().isoformat()
+            self.s.start_date = dlg.value().isoformat(timespec="minutes")
             self.s.save()
             self.gauge.setValue(0)
             self._refresh_view()
@@ -649,17 +768,32 @@ class MainWindow(QMainWindow):
         restart = new.refresh_sec != self.s.refresh_sec
         new.save()
         self.s = new
+        set_autostart(self.s.autostart)
         self._apply_look()
         self._build()
+        if self.tray:
+            self._tray_open.setText(self.tr("tray_open"))
+            self._tray_quit.setText(self.tr("tray_quit"))
         if dlg.change_router:
             self._run_wizard()
         elif restart:
             self._start_poller()
 
+    # ================================================================ close = keep running
     def closeEvent(self, e):
+        if self.tray and not self._quitting:
+            e.ignore()
+            self.hide()
+            if not self._tray_hint_shown:
+                self._tray_hint_shown = True
+                self.notify(APP_NAME, self.tr("tray_hint"))
+            return
         if self.poller:
             self.poller.shutdown()
         self.pc_mon.stop()
         if self.dns_mon:
             self.dns_mon.stop()
+        if self.tray:
+            self.tray.hide()
         super().closeEvent(e)
+        QApplication.instance().quit()          # quit also when there is no tray icon

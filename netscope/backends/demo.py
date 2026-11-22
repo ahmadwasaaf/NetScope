@@ -48,6 +48,7 @@ class DemoBackend(RouterBackend):
             if site not in self.blocked_domains:
                 s.site_deltas[site] = random.randint(0, 25) * 1024 * 1024
         s.wan_delta = sum(s.device_deltas.values())
+        s.line_down_kbps, s.line_up_kbps = 35840, 5120
         s.down_bps = random.uniform(0.6, 4.5) * 1024 * 1024
         s.up_bps = random.uniform(0.05, 0.6) * 1024 * 1024
         return s

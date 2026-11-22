@@ -79,7 +79,9 @@ class Gauge(QWidget):
         self.quota_gb = 0.0
         self._value = 0.0
         self.target = 0.0
-        self.setMinimumSize(300, 250)
+        self.setMinimumSize(280, 240)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFixedHeight(250)
         self.anim = QPropertyAnimation(self, b"value", self)
         self.anim.setDuration(1100)
         self.anim.setEasingCurve(QEasingCurve.OutCubic)
@@ -120,9 +122,13 @@ class Gauge(QWidget):
         qp = QPainter(self)
         qp.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        thick = max(16, min(w, h) * 0.075)
-        side = min(w - 20, h * 1.3) - thick
-        rect = QRectF((w - side) / 2, thick / 2 + 6, side, side)
+        thick = max(14.0, min(w, h) * 0.07)
+        pad = 6
+        # a 240° arc reaches r above the centre and r·sin(30°)=0.5r below it
+        r = max(20.0, min((w - thick - 2 * pad) / 2, (h - thick - 2 * pad) / 1.5))
+        cx, cy = w / 2, pad + thick / 2 + r
+        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+        side = 2 * r
         start = 90 + self.SPAN / 2
 
         pen = QPen(QColor(self.p.track), thick, Qt.SolidLine, Qt.RoundCap)
@@ -140,7 +146,6 @@ class Gauge(QWidget):
             qp.setPen(pen)
             qp.drawArc(rect, int(start * 16), int(-self.SPAN * frac * 16))
 
-        cy = rect.center().y()
         qp.setPen(QColor(self.p.text))
         f = QFont("Segoe UI", 1, QFont.Bold)
         f.setPixelSize(int(side * 0.2))
@@ -198,15 +203,18 @@ class Sparkline(QWidget):
 
 
 class SpeedTile(QFrame):
-    def __init__(self, palette: Palette, title: str, glyph: str, color: str = ""):
+    """Big number = the line's speed from the router (e.g. DSL sync rate).
+    Small line + sparkline = what is being used right now."""
+
+    def __init__(self, palette: Palette, title: str, glyph: str, color: str = "", now_label: str = ""):
         super().__init__()
         self.setObjectName("Tile")
+        self.now_label = now_label
         v = QVBoxLayout(self)
         v.setContentsMargins(12, 10, 12, 8)
         v.setSpacing(2)
         top = QHBoxLayout()
-        ic = icon_label(glyph, 12, color=color or palette.accent)
-        top.addWidget(ic)
+        top.addWidget(icon_label(glyph, 12, color=color or palette.accent))
         t = QLabel(title)
         t.setObjectName("Muted")
         top.addWidget(t)
@@ -215,12 +223,21 @@ class SpeedTile(QFrame):
         self.value = QLabel("—")
         self.value.setObjectName("TileValue")
         v.addWidget(self.value)
+        self.now = QLabel()
+        self.now.setObjectName("Muted")
+        v.addWidget(self.now)
         self.spark = Sparkline(palette, color)
         v.addWidget(self.spark)
 
-    def set_speed(self, bps):
-        self.value.setText(fmt_speed(bps))
-        self.spark.push(bps)
+    def set_values(self, line_kbps, now_bps):
+        if line_kbps:
+            self.value.setText(fmt_speed(line_kbps * 1000 / 8))
+            self.now.setText(f"{self.now_label}: {fmt_speed(now_bps)}" if now_bps is not None else "")
+            self.now.setVisible(now_bps is not None)
+        else:                                  # router doesn't report its line speed
+            self.value.setText(fmt_speed(now_bps))
+            self.now.hide()
+        self.spark.push(now_bps)
 
 
 # ---------------------------------------------------------------------------- Bar
@@ -462,6 +479,139 @@ class CollapsibleSection(QFrame):
             self.list.takeAt(0)
         for k in ordered_keys:
             self.list.addWidget(self.rows[k])
+
+
+# ---------------------------------------------------------------------------- Device card
+class DeviceCard(QFrame):
+    """One device: icon | name (+ip) · status pill · usage · chevron. Expands to its websites."""
+    context = Signal(str, object)          # mac, global pos (right-click on the header)
+    site_context = Signal(str, object)     # domain, global pos
+    activated = Signal(str)                # double-click header -> rename
+    toggled = Signal(str, bool)
+    action = Signal(str)                   # setup button inside the card
+
+    def __init__(self, key: str, palette: Palette, icon: str, open_=False):
+        super().__init__()
+        self.key, self.p, self.is_open = key, palette, open_
+        self.setObjectName("DevCard")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.header = QFrame()
+        self.header.setObjectName("DevHeader")
+        self.header.setCursor(Qt.PointingHandCursor)
+        self.header.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.header.customContextMenuRequested.connect(
+            lambda pos: self.context.emit(self.key, self.header.mapToGlobal(pos)))
+        h = QHBoxLayout(self.header)
+        h.setContentsMargins(12, 10, 14, 10)
+        h.setSpacing(12)
+        self.icon = icon_label(icon, 17, "IconTile", color=palette.text)
+        self.icon.setFixedSize(40, 40)
+        h.addWidget(self.icon)
+        sep = QFrame()
+        sep.setObjectName("VSep")
+        sep.setFixedWidth(1)
+        h.addWidget(sep)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        self.name = QLabel()
+        self.name.setObjectName("DevName")
+        self.sub = QLabel()
+        self.sub.setObjectName("Muted")
+        col.addWidget(self.name)
+        col.addWidget(self.sub)
+        h.addLayout(col, 1)
+        self.pill = QLabel()
+        h.addWidget(self.pill)
+        self.chip = QLabel()
+        self.chip.setObjectName("Badge")
+        self.chip.hide()
+        h.addWidget(self.chip)
+        self.usage = QLabel()
+        self.usage.setObjectName("DevUsage")
+        self.usage.setMinimumWidth(70)
+        self.usage.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        h.addWidget(self.usage)
+        self.chev = icon_label("up" if open_ else "down", 12)
+        h.addWidget(self.chev)
+        self.header.mousePressEvent = lambda e: self.toggle() if e.button() == Qt.LeftButton else None
+        self.header.mouseDoubleClickEvent = lambda e: self.activated.emit(self.key)
+        outer.addWidget(self.header)
+
+        self.body = QWidget()
+        bl = QVBoxLayout(self.body)
+        bl.setContentsMargins(14, 0, 14, 12)
+        bl.setSpacing(2)
+        self.sites_w = QWidget()
+        self.sites = QVBoxLayout(self.sites_w)
+        self.sites.setContentsMargins(0, 0, 0, 0)
+        self.sites.setSpacing(2)
+        bl.addWidget(self.sites_w)
+        self.empty = QLabel()
+        self.empty.setObjectName("Muted")
+        self.empty.setWordWrap(True)
+        self.empty.setTextFormat(Qt.RichText)
+        self.empty.setOpenExternalLinks(True)
+        self.empty.setContentsMargins(4, 6, 4, 6)
+        bl.addWidget(self.empty)
+        self.action_btn = QPushButton()
+        self.action_btn.setObjectName("Primary")
+        self.action_btn.setCursor(Qt.PointingHandCursor)
+        self.action_btn.clicked.connect(lambda: self.action.emit(self.key))
+        bl.addWidget(self.action_btn, 0, Qt.AlignHCenter)
+        outer.addWidget(self.body)
+        self.body.setVisible(open_)
+        self.rows = {}
+        self.fx = QGraphicsOpacityEffect(self)
+        self.fx.setOpacity(1.0)
+        self.setGraphicsEffect(self.fx)
+
+    def toggle(self):
+        self.is_open = not self.is_open
+        self.chev.setText(GLYPH["up" if self.is_open else "down"])
+        self.body.setVisible(self.is_open)
+        self.toggled.emit(self.key, self.is_open)
+
+    def set_header(self, name, sub, online, status_text, usage_text, blocked, blocked_text):
+        self.name.setText(name)
+        self.sub.setText(sub)
+        self.sub.setVisible(bool(sub))
+        if online is None:
+            self.pill.hide()
+        else:
+            self.pill.show()
+            self.pill.setObjectName("OnPill" if online else "OffPill")
+            self.pill.setText(f"●  {status_text}")
+            self.pill.style().unpolish(self.pill)
+            self.pill.style().polish(self.pill)
+        self.usage.setText(usage_text)
+        self.usage.setVisible(bool(usage_text))
+        self.chip.setText(blocked_text)
+        self.chip.setVisible(blocked)
+        self.fx.setOpacity(0.45 if blocked else (0.7 if online is False else 1.0))
+
+    def set_sites(self, items, empty_text="", action_text=""):
+        """items: [(key, label, bytes_or_None, frac, blocked, blocked_text, index)]"""
+        keys = [i[0] for i in items]
+        for k in list(self.rows):
+            if k not in keys:
+                self.rows.pop(k).deleteLater()
+        while self.sites.count():
+            self.sites.takeAt(0)
+        for key, label, nbytes, frac, blocked, btext, index in items:
+            row = self.rows.get(key)
+            if row is None:
+                row = UsageRow(key, self.p)
+                row.context.connect(self.site_context)
+                self.rows[key] = row
+            row.set_data(label, "", nbytes, frac, blocked, btext, index=index)
+            self.sites.addWidget(row)
+        self.empty.setText(empty_text.replace("\n", "<br>"))
+        self.empty.setVisible(bool(empty_text))
+        self.action_btn.setText(action_text)
+        self.action_btn.setVisible(bool(action_text))
 
 
 # ---------------------------------------------------------------------------- Segmented

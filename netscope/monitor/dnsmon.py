@@ -40,7 +40,7 @@ class DnsMonitor:
         self.port = port
         self.exclude = set(exclude or ())          # this PC's own addresses
         self.status = "off"
-        self.counts: Dict[str, int] = defaultdict(int)
+        self.counts: Dict[Tuple[str, str], int] = defaultdict(int)     # (client ip, site) -> lookups
         self.clients: Set[str] = set()          # other devices that used NetScope as DNS
         self.total_queries = 0                  # every question received (diagnostics)
         self.last_query = 0.0
@@ -77,7 +77,7 @@ class DnsMonitor:
             except OSError:
                 pass
 
-    def drain(self) -> Dict[str, int]:
+    def drain(self) -> Dict[Tuple[str, str], int]:
         with self.lock:
             out, self.counts = dict(self.counts), defaultdict(int)
         return out
@@ -106,7 +106,7 @@ class DnsMonitor:
                 site = site_of(q[1])
                 if site:
                     with self.lock:
-                        self.counts[site] += 1
+                        self.counts[(addr[0], site)] += 1
                         self.clients.add(addr[0])
                         self.last_query = time.time()
             # forward unchanged except for the transaction id (so answers can't mix up)
