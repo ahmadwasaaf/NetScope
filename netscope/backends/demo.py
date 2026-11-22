@@ -40,6 +40,7 @@ class DemoBackend(RouterBackend):
             s.device_deltas = {d.mac: int(g * GB) for d, g in zip(DEVICES, SEED_DEV)}
             s.site_deltas = {k: int(v * GB) for k, v in SEED_SITES.items()}
             s.wan_delta = sum(s.device_deltas.values())
+            s.line_down_kbps, s.line_up_kbps = 35840, 5120
             return s
         for d in DEVICES:
             if d.mac not in self.blocked_macs:

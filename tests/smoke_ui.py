@@ -57,10 +57,16 @@ def run(tag, **settings):
         img.save(os.path.join(OUT, f"{tag}.jpg"), "JPG", 70)
         win.quit_app()
 
-    QTimer.singleShot(3500, expand)
-    QTimer.singleShot(6500, shoot)
-    QTimer.singleShot(12000, app.quit)
+    timers = []
+    for ms, fn in ((3500, expand), (6500, shoot), (12000, app.quit)):
+        t = QTimer()
+        t.setSingleShot(True)
+        t.timeout.connect(fn)
+        t.start(ms)
+        timers.append(t)
     app.exec()
+    for t in timers:          # never let a timer of this run fire in the next one
+        t.stop()
     print(f"{tag}: devices={len(win.cards)} used={win._used_bytes()/1024**3:.2f} GB")
 
 
