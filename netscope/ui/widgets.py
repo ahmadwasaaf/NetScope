@@ -586,7 +586,6 @@ class InnerScroll(QScrollArea):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.viewport().setAutoFillBackground(False)
-        content.setObjectName("InnerBody")
         self.setWidget(content)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
@@ -669,8 +668,11 @@ class DeviceCard(QFrame):
         self.sites = QVBoxLayout(self.sites_w)
         self.sites.setContentsMargins(0, 0, 0, 0)
         self.sites.setSpacing(2)
-        self.sites_scroll = InnerScroll(self.sites_w)
+        bl.addWidget(self.sites_w)                     # <= 5 items: plain list
+        self.sites_scroll = InnerScroll(QWidget())     # > 5 items: the list moves in here
+        self.sites_scroll.hide()
         bl.addWidget(self.sites_scroll)
+        self._scrolled = False
         self.empty = QLabel()
         self.empty.setObjectName("Muted")
         self.empty.setWordWrap(True)
@@ -743,27 +745,31 @@ class DeviceCard(QFrame):
     VISIBLE_ITEMS = 5
 
     def fit_inner(self):
-        """Show up to 5 items; more than that scroll inside the card."""
-        for l in self.findChildren(QLayout):          # nested cards may have just changed size
-            l.invalidate()
+        """Up to 5 items: a plain list. More: the list scrolls inside the card (5½ items tall)."""
         lay = self.sites
-        items = [lay.itemAt(i).widget() for i in range(lay.count())]
-        items = [x for x in items if x is not None]   # (new rows are shown a moment later: don't test isHidden)
-        w = max(50, self.sites_scroll.viewport().width(), self.width() - 30)
-        if not items:
-            h = 0
-        else:
-            full = lay.totalHeightForWidth(w) if lay.hasHeightForWidth() else lay.totalSizeHint().height()
-            h = full
-            n = self.VISIBLE_ITEMS
-            if len(items) > n:
-                hint = lambda x: x.heightForWidth(w) if x.hasHeightForWidth() else x.sizeHint().height()
-                h = min(full, sum(hint(x) for x in items[:n]) + lay.spacing() * n
-                        + hint(items[n]) // 2)        # half of the 6th shows there is more
-        if self.sites_scroll.minimumHeight() != h or self.sites_scroll.maximumHeight() != h:
-            self.sites_scroll.setFixedHeight(h)
-        for l in self.findChildren(QLayout):
-            l.invalidate()
+        items = [x for x in (lay.itemAt(i).widget() for i in range(lay.count())) if x is not None]
+        n = self.VISIBLE_ITEMS
+        bl = self.body.layout()
+        if len(items) > n:
+            if not self._scrolled:
+                self._scrolled = True
+                bl.removeWidget(self.sites_w)
+                self.sites_scroll.takeWidget()
+                self.sites_scroll.setWidget(self.sites_w)
+                self.sites_w.setObjectName("InnerBody")
+                self.sites_w.show()
+                self.sites_scroll.show()
+            hint = lambda x: x.sizeHint().height()
+            h = sum(hint(x) for x in items[:n]) + lay.spacing() * n + hint(items[n]) // 2
+            if self.sites_scroll.minimumHeight() != h or self.sites_scroll.maximumHeight() != h:
+                self.sites_scroll.setFixedHeight(h)
+        elif self._scrolled:
+            self._scrolled = False
+            self.sites_scroll.takeWidget()
+            self.sites_scroll.setWidget(QWidget())
+            self.sites_scroll.hide()
+            bl.insertWidget(0, self.sites_w)
+            self.sites_w.show()
 
     def set_children(self, widgets, empty_text=""):
         """Put other cards (the devices of a type group) inside this card."""
@@ -775,6 +781,7 @@ class DeviceCard(QFrame):
             for w in widgets:
                 w.set_nested(True)
                 self.sites.addWidget(w)
+            self.fit_inner()
         self.empty.setText(empty_text)
         self.empty.setVisible(bool(empty_text))
         self.action_btn.hide()
@@ -795,6 +802,7 @@ class DeviceCard(QFrame):
                 self.rows[key] = row
             row.set_data(label, "", nbytes, frac, blocked, btext, index=index)
             self.sites.addWidget(row)
+        self.fit_inner()
         self.empty.setText(empty_text.replace("\n", "<br>"))
         self.empty.setVisible(bool(empty_text))
         self.action_btn.setText(action_text)
