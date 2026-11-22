@@ -91,7 +91,8 @@ class MainWindow(QMainWindow):
         self.cards = {}
         self._quitting = False
         self._tray_hint_shown = False
-        self.resize(600, 940)
+        avail = QGuiApplication.primaryScreen().availableGeometry() if QGuiApplication.primaryScreen() else None
+        self.resize(600, min(940, avail.height() - 60) if avail else 900)   # never taller than the screen
         self.setMinimumWidth(520)
         self._open_store()
         self._apply_look()
@@ -192,7 +193,7 @@ class MainWindow(QMainWindow):
         body.setObjectName("ScrollBody")
         scroll.setWidget(body)
         col = QVBoxLayout(body)
-        col.setContentsMargins(0, 0, 0, 16)
+        col.setContentsMargins(0, 0, 0, 80)          # room to scroll the last card fully into view
         col.setSpacing(12)
         col.addWidget(self._gauge_card())
 
