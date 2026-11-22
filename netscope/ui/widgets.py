@@ -6,7 +6,7 @@ from PySide6.QtCore import (Property, QEasingCurve, QPointF, QPropertyAnimation,
                             Qt, QTimer, Signal)
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtCore import QLocale
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame,
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QScrollArea,
                                QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QSizePolicy, QToolButton,
                                QVBoxLayout, QWidget)
@@ -575,6 +575,31 @@ class CollapsibleSection(QFrame):
 
 
 # ---------------------------------------------------------------------------- Device card
+class InnerScroll(QScrollArea):
+    """Scroll box inside a card. At its top/bottom (or when there is nothing to scroll)
+    the mouse wheel goes on to the page, so the page never 'sticks'."""
+
+    def __init__(self, content: QWidget):
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.viewport().setAutoFillBackground(False)
+        content.setObjectName("InnerBody")
+        self.setWidget(content)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+    def wheelEvent(self, e):
+        bar = self.verticalScrollBar()
+        dy = e.angleDelta().y()
+        if bar.maximum() == 0 or (dy > 0 and bar.value() <= bar.minimum()) or \
+                (dy < 0 and bar.value() >= bar.maximum()):
+            e.ignore()
+            return
+        super().wheelEvent(e)
+
+
 class DeviceCard(QFrame):
     """One device: icon | name (+ip) · status pill · usage · chevron. Expands to its websites."""
     context = Signal(str, object)          # mac, global pos (right-click on the header)
@@ -644,7 +669,8 @@ class DeviceCard(QFrame):
         self.sites = QVBoxLayout(self.sites_w)
         self.sites.setContentsMargins(0, 0, 0, 0)
         self.sites.setSpacing(2)
-        bl.addWidget(self.sites_w)
+        self.sites_scroll = InnerScroll(self.sites_w)
+        bl.addWidget(self.sites_scroll)
         self.empty = QLabel()
         self.empty.setObjectName("Muted")
         self.empty.setWordWrap(True)
@@ -713,6 +739,30 @@ class DeviceCard(QFrame):
             col = self.p.subtext if dim else self.p.text
             self.name.setStyleSheet(f"color: {col};")
             self.usage.setStyleSheet(f"color: {col};")
+
+    VISIBLE_ITEMS = 5
+
+    def fit_inner(self):
+        """Show up to 5 items; more than that scroll inside the card."""
+        lay = self.sites
+        items = [lay.itemAt(i).widget() for i in range(lay.count())]
+        items = [w for w in items if w is not None and not w.isHidden()]
+        lay.invalidate()
+        if not items:
+            self.sites_scroll.setFixedHeight(0)
+            self.sites_scroll.setVisible(False)
+            return
+        self.sites_scroll.setVisible(True)
+        w = max(50, self.sites_scroll.viewport().width() or (self.width() - 28))
+        full = lay.totalHeightForWidth(w) if lay.hasHeightForWidth() else lay.totalSizeHint().height()
+        h = full
+        n = self.VISIBLE_ITEMS
+        if len(items) > n:
+            hint = lambda x: x.heightForWidth(w) if x.hasHeightForWidth() else x.sizeHint().height()
+            h = min(full, sum(hint(x) for x in items[:n]) + lay.spacing() * n
+                    + hint(items[n]) // 2)            # half of the 6th shows there is more
+        if self.sites_scroll.height() != h or self.sites_scroll.minimumHeight() != h:
+            self.sites_scroll.setFixedHeight(h)
 
     def set_children(self, widgets, empty_text=""):
         """Put other cards (the devices of a type group) inside this card."""

@@ -41,7 +41,7 @@ def stylesheet(p: Palette) -> str:
     return f"""
     QWidget {{ color: {p.text}; font-family: 'Segoe UI', 'Tahoma', 'Segoe Fluent Icons', 'Segoe MDL2 Assets'; font-size: 13px; }}
     QMainWindow, #Root {{ background: {p.window}; }}
-    QScrollArea, #ScrollBody {{ background: transparent; border: none; }}
+    QScrollArea, #ScrollBody, #InnerBody {{ background: transparent; border: none; }}
     #Card {{ background: {p.card}; border-radius: 16px; }}
     #Header {{ background: {p.header}; border-radius: 14px; }}
     #Title {{ font-size: 18px; font-weight: 700; }}
@@ -86,8 +86,8 @@ def stylesheet(p: Palette) -> str:
     #DevCard {{ background: transparent; border: 1px solid {p.border}; border-radius: 14px; }}
     #DevHeader {{ border-radius: 14px; }}
     #DevHeader:hover {{ background: {p.accent_soft(26)}; }}
-    #DevCard[open="true"] {{ border: 1px solid {p.accent_soft(120)}; background: {p.accent_soft(8)}; }}
-    #DevCard[open="true"][nested="true"] {{ border: 2px solid {p.accent}; background: {p.accent_soft(18)}; }}
+    #DevCard[open="true"] {{ border: 1px solid {p.accent_soft(120)}; background: {p.accent_soft(6)}; }}
+    #DevCard[open="true"][nested="true"] {{ border: 2px solid {p.accent}; background: {p.accent_soft(14)}; }}
     #VSep {{ background: {p.border}; min-height: 30px; max-height: 30px; }}
     #DevName {{ font-size: 15px; font-weight: 600; }}
     #DevUsage {{ font-size: 15px; font-weight: 700; }}

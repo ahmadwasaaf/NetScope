@@ -598,6 +598,9 @@ class MainWindow(QMainWindow):
             return
         for lay in body.findChildren(QLayout):     # drop every cached size, deepest included
             lay.invalidate()
+        for card in list(self.dev_cards.values()) + list(self.cards.values()):   # devices first, then types
+            if card.is_open:
+                card.fit_inner()
         lay = body.layout()
         lay.activate()
         w = self.scroll.viewport().width()

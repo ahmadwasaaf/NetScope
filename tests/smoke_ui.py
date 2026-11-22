@@ -46,7 +46,8 @@ def run(tag, **settings):
     win = mw.MainWindow()
     win.resize(600, 860)
     win.store.add("pcsite", {"youtube.com": 900 * 1024**2, "x.com": 470 * 1024**2, "claude.ai": 140 * 1024**2,
-                             "google.com": 61 * 1024**2, "whatsapp.com": 41 * 1024**2, "Other / unresolved": 12 * 1024**2})
+                             "google.com": 61 * 1024**2, "whatsapp.com": 41 * 1024**2, "github.com": 30 * 1024**2,
+                             "wikipedia.org": 20 * 1024**2, "Other / unresolved": 12 * 1024**2})
     win.store.add("devsite", {"aa:bb:cc:00:00:03|tiktok.com": 120, "aa:bb:cc:00:00:03|instagram.com": 80,
                               "aa:bb:cc:00:00:03|youtube.com": 40})
 
@@ -63,6 +64,9 @@ def run(tag, **settings):
             need = card.header.sizeHint().height()
             if card.header.height() < need - 2:
                 errors.append(f"{tag}: device header squashed ({card.header.height()} < {need})")
+            sc = card.sites_scroll
+            if sc.verticalScrollBar().maximum() <= 0:
+                errors.append(f"{tag}: >5 websites but no inner scrollbar (h={sc.height()})")
             rows = [r for r in card.rows.values() if r.isVisible()]
             if not rows or min(r.height() for r in rows) < 20:
                 errors.append(f"{tag}: website rows not visible ({[r.height() for r in rows]})")
