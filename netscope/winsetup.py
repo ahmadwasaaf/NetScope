@@ -5,6 +5,7 @@ elevated, so Windows shows its normal UAC prompt ("Do you want to allow…?").
 """
 import base64
 import json
+import os
 import subprocess
 import sys
 
@@ -35,7 +36,12 @@ $a = Get-NetIPAddress -AddressFamily IPv4 -IPAddress '{my_ip}' | Select-Object -
 $i = $a.InterfaceIndex
 $p = (Get-NetConnectionProfile -InterfaceIndex $i | Select-Object -First 1).NetworkCategory
 $d = @((Get-DnsClientServerAddress -InterfaceIndex $i -AddressFamily IPv4).ServerAddresses)
-$f = @(Get-NetFirewallRule -DisplayName '{FW_NAME}*' | Where-Object Enabled -eq 'True').Count
+$f = 0
+foreach ($n in @('{FW_NAME} (UDP)', '{FW_NAME} (TCP)')) {{
+  netsh advfirewall firewall show rule name="$n" dir=in | Out-Null
+  if ($LASTEXITCODE -eq 0) {{ $f++ }}
+}}
+if ($f -lt 2) {{ $f = @(Get-NetFirewallRule -DisplayName '{FW_NAME}*').Count }}
 @{{ if = $i; profile = "$p"; dns = $d; fw = $f }} | ConvertTo-Json -Compress
 """
     try:
@@ -53,7 +59,7 @@ $f = @(Get-NetFirewallRule -DisplayName '{FW_NAME}*' | Where-Object Enabled -eq 
         "dns": dns,
         "self_dns": my_ip in dns or "127.0.0.1" in dns,
         "public_dns": any(d in ("1.1.1.1", "8.8.8.8", "9.9.9.9", "1.0.0.1", "8.8.4.4") for d in dns),
-        "fw": int(data.get("fw") or 0) > 0,
+        "fw": int(data.get("fw") or 0) >= 2,
     }
 
 
@@ -74,8 +80,10 @@ def run_elevated(script: str, timeout_ms: int = 60000) -> int:
                     ("hkeyClass", wintypes.HKEY), ("dwHotKey", wintypes.DWORD),
                     ("hIconOrMonitor", wintypes.HANDLE), ("hProcess", wintypes.HANDLE)]
 
-    enc = base64.b64encode(("$ErrorActionPreference='Stop'; try { " + script +
-                            " ; exit 0 } catch { exit 1 }").encode("utf-16-le")).decode()
+    log = os.path.join(os.environ.get("TEMP", "."), "NetScope-admin.log")
+    wrapped = ("$ErrorActionPreference='Stop'; try { " + script + " ; exit 0 } catch { "
+               f"$_ | Out-String | Set-Content -Path '{log}' -Encoding UTF8; exit 1 }}")
+    enc = base64.b64encode(wrapped.encode("utf-16-le")).decode()
     info = SHELLEXECUTEINFOW()
     info.cbSize = ctypes.sizeof(info)
     info.fMask = 0x00000040                      # SEE_MASK_NOCLOSEPROCESS
@@ -99,13 +107,25 @@ def set_private(if_index: int, private: bool = True) -> int:
 
 
 def allow_firewall(exe_path: str = "") -> int:
-    rules = (f"Get-NetFirewallRule -DisplayName '{FW_NAME}*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; "
-             f"New-NetFirewallRule -DisplayName '{FW_NAME} (UDP)' -Direction Inbound -Protocol UDP -LocalPort 53 "
-             f"-Action Allow -Profile Private,Domain | Out-Null; "
-             f"New-NetFirewallRule -DisplayName '{FW_NAME} (TCP)' -Direction Inbound -Protocol TCP -LocalPort 53 "
-             f"-Action Allow -Profile Private,Domain | Out-Null")
-    return run_elevated(rules)
+    """Two inbound rules (UDP+TCP 53) on private/domain networks. netsh is used because it
+    works the same on every Windows edition and language and returns a clear exit code."""
+    lines = []
+    for proto in ("UDP", "TCP"):
+        name = f"{FW_NAME} ({proto})"
+        lines.append(f'netsh advfirewall firewall delete rule name="{name}" | Out-Null')
+        lines.append(f'netsh advfirewall firewall add rule name="{name}" dir=in action=allow '
+                     f'protocol={proto} localport=53 profile=private,domain enable=yes')
+        lines.append("if ($LASTEXITCODE -ne 0) { throw 'netsh failed' }")
+    return run_elevated("; ".join(lines))
 
 
 def use_public_dns() -> int:
     return run_elevated(PUBLIC_DNS_CMD)
+
+
+def last_error() -> str:
+    try:
+        with open(os.path.join(os.environ.get("TEMP", "."), "NetScope-admin.log"), encoding="utf-8-sig") as f:
+            return " ".join(f.read().split())[:300]
+    except OSError:
+        return ""

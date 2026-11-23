@@ -58,6 +58,12 @@ def run(tag, **settings):
     except OSError:
         real_ip = ""
     print(f"{tag}: real windows state for {real_ip} = {winsetup.read_state(real_ip)}", flush=True)
+    if tag == "dark_en" and sys.platform == "win32":
+        code = winsetup.allow_firewall()
+        st = winsetup.read_state(real_ip)
+        print(f"{tag}: allow_firewall exit={code} fw={st.get('fw')} err={winsetup.last_error()!r}", flush=True)
+        if code != 0 or not st.get("fw"):
+            errors.append(f"firewall rule not created (exit {code}, fw {st.get('fw')})")
 
     win._read_win_state = lambda: None     # keep the sample state below on screen
 

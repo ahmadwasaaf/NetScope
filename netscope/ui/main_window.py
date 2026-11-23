@@ -554,7 +554,8 @@ class MainWindow(QMainWindow):
             elif code == -1223:
                 self.toast.show_message(self.tr("ps_cancel"))
             else:
-                self.toast.show_message(self.tr("ps_failed"), error=True)
+                err = winsetup.last_error()
+                self.toast.show_message(self.tr("ps_failed") + (f"\n{err}" if err else ""), error=True, ms=15000)
             self._setup_sig = None
             self._read_win_state()
             if code == 0 and self.dns_mon:          # make sure the helper (re)binds after a change
