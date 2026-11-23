@@ -22,7 +22,10 @@ from .. import APP_NAME, APP_VERSION
 from ..backends import Cap, Snapshot, clean_domain, create_backend, detect
 from ..i18n import Translator
 from ..monitor.dnsmon import DnsMonitor
+from ..monitor.domains import is_system
 from ..monitor.pcap import UNRESOLVED, PcMonitor, _primary_ipv4
+
+SYSTEM_KEY = "__system__"
 from ..poller import Poller, Task
 from ..settings import Settings, data_dir
 from ..store import UsageStore
@@ -90,6 +93,7 @@ class MainWindow(QMainWindow):
         self.blocked_macs: set = set()
         self.blocked_domains: set = set()
         self.open_devices: set = set()
+        self._sys_open: set = set()            # cards whose "System services" row is open
         self.active_key = None                 # the one card the user picked last (highlighted)
         self.user_closed: set = set()          # devices the user closed by hand (not re-opened automatically)
         self.cards = {}
@@ -713,6 +717,7 @@ class MainWindow(QMainWindow):
                 card.set_active(m == self.active_key)
                 card.toggled.connect(self._card_toggled)
                 card.site_context.connect(self._site_menu)
+                card.site_clicked.connect(self._site_clicked)
                 card.action.connect(self._card_action)
                 card.context.connect(self._device_menu)
                 card.activated.connect(self._rename)
@@ -800,6 +805,7 @@ class MainWindow(QMainWindow):
                 card.set_active(k == self.active_key)
                 card.toggled.connect(self._card_toggled)
                 card.site_context.connect(self._site_menu)
+                card.site_clicked.connect(self._site_clicked)
                 self.cards[k] = card
         if keys == self._card_order:
             return
@@ -855,14 +861,33 @@ class MainWindow(QMainWindow):
             mon = self.dns_mon
             if not totals:
                 empty = tr("no_sites_yet") if (mon and mon.receiving) else tr("sites_need_dns")
-        order = sorted(totals, key=lambda d: (d in self.blocked_domains, d == UNRESOLVED, -totals[d], d))[:60]
-        peak = max([totals[d] for d in order] + [1])
+        key_of = lambda d: (d in self.blocked_domains, d == UNRESOLVED, -totals[d], d)
+        system = sorted((d for d in totals if is_system(d) and d not in self.blocked_domains), key=key_of)
+        order = sorted((d for d in totals if d not in system), key=key_of)[:60]
+        sys_total = sum(totals[d] for d in system)
+        peak = max([totals[d] for d in order] + [sys_total if system else 0, 1])
         items = []
         for i, d in enumerate(order, 1):
             label = tr("unresolved") if d == UNRESOLVED else d
             used = totals[d] if show_bytes else None
             items.append((d, label, used, (used or 0) / peak, d in self.blocked_domains, tr("blocked"), f"{i:02d}"))
+        if system:                       # background services: one row at the bottom, opens on click
+            open_ = mac in self._sys_open
+            arrow = GLYPH["up" if open_ else "down"]
+            used = sys_total if show_bytes else None
+            items.append((SYSTEM_KEY, f"{tr('sys_group')} · {len(system)}  {arrow}", used,
+                          (used or 0) / peak, False, "", "⚙"))
+            if open_:
+                for d in system[:60]:
+                    used = totals[d] if show_bytes else None
+                    items.append((d, d, used, (used or 0) / peak, False, "", "  ↳"))
         card.set_sites(items, empty, action)
+
+    def _site_clicked(self, card_key, row_key):
+        if row_key != SYSTEM_KEY:
+            return
+        (self._sys_open.discard if card_key in self._sys_open else self._sys_open.add)(card_key)
+        self._refresh_devices()
 
     def _card_action(self, key):
         mac_is_pc = key == self._this_pc_mac(self.store.device_meta(), {d.mac: d for d in self.snap.devices})
@@ -988,6 +1013,8 @@ class MainWindow(QMainWindow):
             self._refresh_view()
 
     def _site_menu(self, domain, pos):
+        if domain == SYSTEM_KEY:
+            return
         try:
             clean_domain(domain)
             real = True

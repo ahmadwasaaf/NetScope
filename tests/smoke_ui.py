@@ -49,7 +49,10 @@ def run(tag, **settings):
                              "google.com": 61 * 1024**2, "whatsapp.com": 41 * 1024**2, "github.com": 30 * 1024**2,
                              "wikipedia.org": 20 * 1024**2, "Other / unresolved": 12 * 1024**2})
     win.store.add("devsite", {"aa:bb:cc:00:00:03|tiktok.com": 120, "aa:bb:cc:00:00:03|instagram.com": 80,
-                              "aa:bb:cc:00:00:03|youtube.com": 40})
+                              "aa:bb:cc:00:00:03|youtube.com": 40,
+                              "aa:bb:cc:00:00:03|3gppnetwork.org": 90, "aa:bb:cc:00:00:03|gstatic.com": 60,
+                              "aa:bb:cc:00:00:03|samsungcloud.com": 20})
+    win._sys_open.add("aa:bb:cc:00:00:03")
 
     import socket
     from netscope import winsetup

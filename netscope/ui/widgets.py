@@ -361,6 +361,7 @@ class UsageRow(QFrame):
     """Name side: icon, name, sub-line. Other side: usage. Thin bar underneath."""
     context = Signal(str, object)     # key, global pos
     activated = Signal(str)           # double click
+    clicked = Signal(str)             # single left click
 
     def __init__(self, key: str, palette: Palette, icon: str = ""):
         super().__init__()
@@ -418,6 +419,11 @@ class UsageRow(QFrame):
 
     def mouseDoubleClickEvent(self, e):
         self.activated.emit(self.key)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.clicked.emit(self.key)
+        super().mouseReleaseEvent(e)
 
     def set_data(self, name, sub, nbytes, frac, blocked, blocked_text, index="", online=None):
         self.idx.setText(index)
@@ -587,6 +593,7 @@ class DeviceCard(QFrame):
     """One device: icon | name (+ip) · status pill · usage · chevron. Expands to its websites."""
     context = Signal(str, object)          # mac, global pos (right-click on the header)
     site_context = Signal(str, object)     # domain, global pos
+    site_clicked = Signal(str, str)        # card key, row key
     activated = Signal(str)                # double-click header -> rename
     toggled = Signal(str, bool)
     action = Signal(str)                   # setup button inside the card
@@ -823,6 +830,7 @@ class DeviceCard(QFrame):
             if row is None:
                 row = UsageRow(key, self.p)
                 row.context.connect(self.site_context)
+                row.clicked.connect(lambda k, me=self: me.site_clicked.emit(me.key, k))
                 self.rows[key] = row
             row.set_data(label, "", nbytes, frac, blocked, btext, index=index)
             self.sites.addWidget(row)

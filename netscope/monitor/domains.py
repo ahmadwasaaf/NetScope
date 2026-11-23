@@ -21,12 +21,8 @@ ALIASES = {
     "ibytedtos.com": "tiktok.com", "tiktokcdn-us.com": "tiktok.com", "muscdn.com": "tiktok.com",
     "twimg.com": "x.com", "twitter.com": "x.com", "t.co": "x.com",
     "sc-cdn.net": "snapchat.com", "snapkit.com": "snapchat.com",
-    "gvt1.com": "google.com", "gstatic.com": "google.com", "googleapis.com": "google.com",
-    "googleusercontent.com": "google.com", "gvt2.com": "google.com", "1e100.net": "google.com",
-    "googlesyndication.com": "google.com", "doubleclick.net": "google.com",
-    "akamaized.net": "akamai (CDN)", "akamaiedge.net": "akamai (CDN)", "akamai.net": "akamai (CDN)",
+    "googleusercontent.com": "google.com", "akamaized.net": "akamai (CDN)", "akamaiedge.net": "akamai (CDN)", "akamai.net": "akamai (CDN)",
     "cloudfront.net": "amazon (CDN)", "amazonaws.com": "amazon (CDN)",
-    "msftconnecttest.com": "microsoft.com", "windowsupdate.com": "microsoft.com",
     "live.com": "microsoft.com", "office.net": "microsoft.com", "msn.com": "microsoft.com",
     "xboxlive.com": "microsoft.com", "microsoftonline.com": "microsoft.com", "bing.com": "microsoft.com",
     "steamcontent.com": "steampowered.com", "steamstatic.com": "steampowered.com",
@@ -35,6 +31,41 @@ ALIASES = {
     "telegram.org": "telegram.org", "t.me": "telegram.org",
     "shahid.net": "shahid.mbc.net", "mbc.net": "shahid.mbc.net",
 }
+
+# Background traffic of phones/PCs (OS services, updates, push, analytics, ads, time, carrier).
+# Shown grouped as one "System services" row so the sites people actually use stay on top.
+SYSTEM_SITES = {
+    # Google / Android infrastructure
+    "gstatic.com", "googleapis.com", "gvt1.com", "gvt2.com", "gvt3.com", "1e100.net", "googleadservices.com",
+    "googlesyndication.com", "doubleclick.net", "google-analytics.com", "googletagmanager.com",
+    "app-measurement.com", "crashlytics.com", "firebaseio.com", "firebase.com", "android.com",
+    "googlezip.net", "withgoogle.com", "xn--ngstr-lra8j.com",
+    # carriers / Wi-Fi calling
+    "3gppnetwork.org", "pub.3gppnetwork.org",
+    # phone makers
+    "samsung.com", "samsungcloud.com", "samsungapps.com", "samsungosp.com", "samsungdm.com",
+    "samsungqbe.com", "samsungrs.com", "samsungiotcloud.com", "samsungconsent.com", "samsungdisplay.com",
+    "xiaomi.com", "xiaomi.net", "miui.com", "mi.com", "hicloud.com", "dbankcloud.com", "huawei.com",
+    "oppomobile.com", "heytapmobi.com", "heytapmobile.com", "coloros.com", "realme.com",
+    "transsion.com", "shalltry.com", "transsion-os.com", "itel-mobile.com", "infinixmobility.com",
+    "vivo.com", "vivo.com.cn", "oneplus.com", "oneplus.net", "motorola.com", "lenovo.com",
+    # Apple / Microsoft background
+    "icloud-content.com", "apple-dns.net", "aaplimg.com", "push.apple.com",
+    "msftconnecttest.com", "msftncsi.com", "windowsupdate.com", "msedge.net", "trafficmanager.net",
+    "azureedge.net", "windows.com", "events.data.microsoft.com", "digicert.com", "msocsp.com",
+    "lencr.org", "pki.goog", "letsencrypt.org", "sectigo.com", "globalsign.com",
+    # time, analytics, ad networks, SDKs
+    "ntp.org", "time.google.com", "appsflyer.com", "adjust.com", "branch.io", "onesignal.com",
+    "unity3d.com", "applovin.com", "ironsrc.com", "ironsrc.mobi", "inmobi.com", "mopub.com",
+    "facebook-hardware.com", "scorecardresearch.com", "sentry.io", "bugsnag.com", "mixpanel.com",
+    "amplitude.com", "segment.io", "newrelic.com", "nr-data.net", "adcolony.com", "vungle.com",
+    "chartboost.com", "pangle.io", "pangleglobal.com", "bytedance-ads.com",
+}
+
+
+def is_system(site: str) -> bool:
+    return site in SYSTEM_SITES
+
 
 IGNORE = re.compile(r"(\.local|\.lan|\.home|\.arpa|\.internal|localhost)$|^wpad\.|^_", re.I)
 HOST_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
