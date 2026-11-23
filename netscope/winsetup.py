@@ -36,7 +36,7 @@ $a = Get-NetIPAddress -AddressFamily IPv4 -IPAddress '{my_ip}' | Select-Object -
 $i = $a.InterfaceIndex
 $p = (Get-NetConnectionProfile -InterfaceIndex $i | Select-Object -First 1).NetworkCategory
 $d = @((Get-DnsClientServerAddress -InterfaceIndex $i -AddressFamily IPv4).ServerAddresses)
-$v6 = (Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv6 | Where-Object { $_.IPAddress -like 'fe80*' } | Select-Object -First 1).IPAddress
+$v6 = (Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv6 | Where-Object {{ $_.IPAddress -like 'fe80*' }} | Select-Object -First 1).IPAddress
 $f = 0
 foreach ($n in @('{FW_NAME} (UDP)', '{FW_NAME} (TCP)')) {{
   netsh advfirewall firewall show rule name="$n" dir=in | Out-Null
