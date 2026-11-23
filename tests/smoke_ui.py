@@ -51,7 +51,21 @@ def run(tag, **settings):
     win.store.add("devsite", {"aa:bb:cc:00:00:03|tiktok.com": 120, "aa:bb:cc:00:00:03|instagram.com": 80,
                               "aa:bb:cc:00:00:03|youtube.com": 40})
 
+    import socket
+    from netscope import winsetup
+    try:
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.connect(("8.8.8.8", 53)); real_ip = u.getsockname()[0]; u.close()
+    except OSError:
+        real_ip = ""
+    print(f"{tag}: real windows state for {real_ip} = {winsetup.read_state(real_ip)}", flush=True)
+
+    win._read_win_state = lambda: None     # keep the sample state below on screen
+
     def expand():                      # like a user: open the type, connected devices open by themselves
+        win.win_state = {"ok": True, "if": 7, "profile": "Public", "dns": ["192.168.1.2"],
+                         "self_dns": True, "public_dns": False, "fw": False}
+        win._setup_sig = None
+        win._refresh_dns_info()
         for key in ("grp:pc", "grp:phone"):
             if key in win.cards and not win.cards[key].is_open:
                 win.cards[key].toggle()
