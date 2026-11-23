@@ -52,6 +52,11 @@ DHCP_PAGES = ["html/bbsp/dhcp/dhcp_tedata.asp", "html/bbsp/dhcpservercfg/dhcp2.a
               "html/bbsp/dhcpstatic/dhcpstatic.asp", "html/bbsp/dhcpstaticaddr/dhcpstaticaddress.asp",
               "html/bbsp/lanaddress/lanaddress_tedata.asp"]
 DIAG_PAGES += DHCP_PAGES
+LAN_DNS_PAGE = "html/bbsp/dhcpservercfg/dhcp2.asp"
+STATIC_PAGE = "html/bbsp/dhcpstatic/dhcpstatic.asp"
+LHCM = "InternetGatewayDevice.LANDevice.1.LANHostConfigManagement"
+STATIC_OBJ = LHCM + ".DHCPStaticAddress"
+SECONDARY_DNS = "1.1.1.1"
 STAT_REF = re.compile(r"stat|wan|dsl|flow|traffic", re.I)
 
 
@@ -143,7 +148,8 @@ def wan_counters(js: str, context: str = ""):
     return kv_counters(js)
 
 
-_CODE_STR = re.compile(r"x\.[A-Za-z_]\w*|InternetGatewayDevice[\w.{}]*|[\w./-]*\.(?:cgi|asp)(?:\?[\w.=&{}/-]*)?"
+_CODE_STR = re.compile(r"[a-z]\.[A-Za-z_]\w*|&?[a-z]=(?:InternetGatewayDevice[\w.{}]*)?|&?RequestFile=[\w./-]*"
+                       r"|InternetGatewayDevice[\w.{}]*|[\w./-]*\.(?:cgi|asp)(?:\?[\w.=&{}/-]*)?"
                        r"|POST|GET|json|text|true|false|none|block")
 
 
@@ -175,6 +181,11 @@ def referenced_pages(js: str) -> List[str]:
 def form_fields(js: str) -> List[str]:
     """Names of `x.Something` parameters a page submits (names only)."""
     return sorted(set(re.findall(r"['\"](x\.\w+)['\"]", js)))
+
+
+def all_form_fields(js: str) -> List[str]:
+    """Like form_fields, for every one-letter object prefix (x., y., z. …)."""
+    return sorted(set(re.findall(r"['\"]([a-z]\.[A-Za-z_]\w*)['\"]", js)))
 
 
 class HuaweiSession:
@@ -428,7 +439,7 @@ class HuaweiBackend(RouterBackend):
         return HuaweiBackend._probe(js, r"InternetGatewayDevice\.LANDevice[\w.{}]*",
                                     ("add.cgi", "set.cgi", "del.cgi", "DNSServers", "DNSServer", "DnsServer",
                                      "StaticAddress", "Chaddr", "Yiaddr", "IPAddress", "MinAddress",
-                                     "DHCPServerEnable", "addParameter"))
+                                     "DHCPServerEnable", "addParameter", "MainDNS", "SetDNS", "=InternetGatewayDevice"))
 
     @staticmethod
     def _probe(js: str, path_re: str, keys) -> List[str]:
@@ -468,15 +479,18 @@ class HuaweiBackend(RouterBackend):
             refs = referenced_pages(js)
             if refs:
                 lines.append("    loads: " + ", ".join(refs[:25]))
-            fields = form_fields(js)
+            fields = all_form_fields(js) if page in DHCP_PAGES else form_fields(js)
             if fields:
-                lines.append("    fields: " + ", ".join(fields[:40]))
+                lines.append("    fields: " + ", ".join(fields[:60]))
             if "cgi?" in js:
                 lines.append("    token: " + self.s.token_source(js))
             if "parentalctrl" in page.lower():
                 lines += self._parental_probe(js)
             if page in DHCP_PAGES:
                 lines += self._dhcp_probe(js)
+            if page == LAN_DNS_PAGE:
+                form = self._dns_form(js)
+                lines.append(f"    auto DNS form: {form[0] + '.' + form[1] + ' on ' + form[2] if form else 'not found'}")
             kv = kv_counters(js)
             if kv:
                 lines.append("    key/value counters: counting")
@@ -738,8 +752,148 @@ class HuaweiBackend(RouterBackend):
                 done.append("Parental control: website filter switched off")
             self._state_set("url_filter_enabled_by_netscope", False)
             self._state_set("netscope_domains", [])
+        try:
+            d = self.lan_dns_undo()
+            if d:
+                done.append(d)
+        except Exception as e:
+            done.append(f"Network DNS: could not restore ({e})")
         self._heavy_at = None
         return "\n".join(done) or "Nothing to undo – the router has no NetScope changes."
+
+    # ------------------------------------------------------------- phones' DNS -> this PC
+    # Order and safety (each step is checked by reading the router back):
+    #   1. the router's original DNS setting is saved to disk BEFORE anything changes
+    #   2. this PC's address is reserved (DHCP static address) so it can never move
+    #   3. only then the LAN DHCP DNS becomes "<this PC>,1.1.1.1"
+    #   any failure rolls back what this run changed; undo restores the saved original
+    #   and removes only the reservation NetScope itself created.
+    @staticmethod
+    def _dns_form(js: str):
+        """(prefix, field, object) the DHCP page uses to save the LAN DNS servers, or None."""
+        t = _unescape(js)
+        names = re.findall(r"['\"]([a-z])\.((?:X_HW_)?(?:DNSServers|DNSServer|MainDNS|DNSList))['\"]", t)
+        for prefix, field in sorted(set(names), key=lambda n: n[1] != "DNSServers"):
+            if re.search(rf"[?&'\"]{prefix}=({re.escape(LHCM)})(?![\w.])", t):
+                return prefix, field, LHCM
+        return None
+
+    def _lan_dns_value(self, js: str, field: str):
+        objs = parse_js_objects(_unescape(js), "dhcpmainst")
+        if not objs:
+            return None
+        o = objs[0]
+        for key in (field, field.replace("X_HW_", "")):
+            if key in o:
+                return o[key]
+        return None
+
+    def _statics(self) -> Dict[str, tuple]:
+        """mac -> (instance path, ip) of the router's DHCP reservations."""
+        out = {}
+        for page in (STATIC_PAGE, LAN_DNS_PAGE):
+            try:
+                js = _unescape(self.s.get(page))
+            except Exception:
+                continue
+            for o in parse_js_objects(js, "stDhcp"):
+                mac = clean_mac(_field(o, "macAddress", "Chaddr"))
+                dom = _field(o, "domain")
+                if mac and dom.startswith(STATIC_OBJ):
+                    out[mac] = (dom, _field(o, "ipAddress", "Yiaddr"))
+            if out:
+                break
+        return out
+
+    def _post(self, query: str, request_file: str, fields: Dict[str, str]):
+        token = self.s.token_of(self.s.get(request_file))
+        body = dict(fields)
+        body["x.X_HW_Token"] = token
+        with self.s.lock:
+            return self.s._request("POST", f"{query}&RequestFile={request_file}", body)
+
+    def lan_dns_status(self, pc_ip: str, pc_mac: str) -> dict:
+        try:
+            js = self.s.get(LAN_DNS_PAGE)
+        except Exception:
+            return {"supported": False}
+        form = self._dns_form(js)
+        cur = self._lan_dns_value(js, form[1]) if form else None
+        servers = [x.strip() for x in re.split(r"[,;\s]+", cur or "") if x.strip()]
+        st = self._statics()
+        return {"supported": bool(form) and cur is not None,
+                "active": bool(servers) and servers[0] == pc_ip,
+                "reserved": st.get(clean_mac(pc_mac), ("", ""))[1] == pc_ip,
+                "backup": self._state_get("lan_dns_backup") is not None}
+
+    def lan_dns_setup(self, pc_ip: str, pc_mac: str) -> str:
+        mac = clean_mac(pc_mac)
+        if not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", pc_ip or "") or not mac:
+            raise RuntimeError("This PC's address or MAC isn't known yet")
+        js = self.s.get(LAN_DNS_PAGE)
+        form = self._dns_form(js)
+        orig = self._lan_dns_value(js, form[1]) if form else None
+        if not form or orig is None:
+            raise NotImplementedError("unsupported: send a router report from Settings › Router")
+        prefix, field, obj = form
+        # 1. save the original before touching anything (kept if setup runs twice)
+        if self._state_get("lan_dns_backup") is None:
+            self._state_set("lan_dns_backup", {"prefix": prefix, "field": field, "obj": obj, "value": orig})
+        # 2. reserve this PC's address
+        statics = self._statics()
+        added = None
+        if mac in statics:
+            if statics[mac][1] != pc_ip:
+                raise RuntimeError(f"This PC is already reserved to {statics[mac][1]} in the router")
+        else:
+            if any(ip == pc_ip for _, ip in statics.values()):
+                raise RuntimeError(f"{pc_ip} is reserved for another device in the router")
+            self.s.submit("add.cgi", STATIC_OBJ, STATIC_PAGE,
+                          {"x.Yiaddr": pc_ip, "x.Chaddr": mac, "x.Enable": "1"})
+            time.sleep(1)
+            statics = self._statics()
+            if statics.get(mac, ("", ""))[1] != pc_ip:
+                raise RuntimeError("The router didn't accept the address reservation – nothing else was changed")
+            added = statics[mac][0]
+            self._state_set("static_added", added)
+        # 3. point the network's DNS at this PC (fallback 1.1.1.1)
+        value = f"{pc_ip},{SECONDARY_DNS}"
+        try:
+            self._post(f"set.cgi?{prefix}={obj}", LAN_DNS_PAGE, {f"{prefix}.{field}": value})
+            time.sleep(1)
+            now = self._lan_dns_value(self.s.get(LAN_DNS_PAGE), field) or ""
+            if [x for x in re.split(r"[,;\s]+", now) if x][:1] != [pc_ip]:
+                raise RuntimeError("The router didn't accept the new DNS setting")
+        except Exception:
+            if added:                       # roll back this run's reservation
+                try:
+                    self.s.submit("del.cgi", "", STATIC_PAGE, {added: ""})
+                    self._state_set("static_added", None)
+                except Exception:
+                    pass
+            raise
+        self._heavy_at = None
+        return f"DNS {value}; reserved {pc_ip}"
+
+    def lan_dns_undo(self) -> str:
+        done = []
+        b = self._state_get("lan_dns_backup")
+        if b:
+            self._post(f"set.cgi?{b['prefix']}={b['obj']}", LAN_DNS_PAGE, {f"{b['prefix']}.{b['field']}": b["value"]})
+            time.sleep(1)
+            now = self._lan_dns_value(self.s.get(LAN_DNS_PAGE), b["field"])
+            if (now or "") != (b["value"] or ""):
+                raise RuntimeError("The router didn't take back its original DNS setting")
+            self._state_set("lan_dns_backup", None)
+            done.append("Network DNS: original setting restored")
+        added = self._state_get("static_added")
+        if added:
+            if any(p == added for p, _ in self._statics().values()):
+                self.s.submit("del.cgi", "", STATIC_PAGE, {added: ""})
+                time.sleep(1)
+            self._state_set("static_added", None)
+            done.append("Address reservation added by NetScope: removed")
+        return "\n".join(done)
 
     # small persistent state (survives restarts) ------------------------------
     def _state_file(self):

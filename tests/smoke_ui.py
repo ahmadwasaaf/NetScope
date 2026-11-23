@@ -70,6 +70,7 @@ def run(tag, **settings):
     def expand():                      # like a user: open the type, connected devices open by themselves
         win.win_state = {"ok": True, "if": 7, "profile": "Public", "dns": ["192.168.1.2"],
                          "self_dns": True, "public_dns": False, "fw": False}
+        win.lan_state = {"supported": True, "active": False}
         win._setup_sig = None
         win._refresh_dns_info()
         for key in ("grp:pc", "grp:phone"):

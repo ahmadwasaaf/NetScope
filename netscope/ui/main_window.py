@@ -233,6 +233,8 @@ class MainWindow(QMainWindow):
         self.setup_box.setSpacing(8)
         rv.addLayout(self.setup_box)
         self.win_state = {}
+        self.lan_state = {}
+        self._lan_busy = False
         self._win_task = None
         self._setup_sig = None
         self._caps_shown = None
@@ -385,6 +387,9 @@ class MainWindow(QMainWindow):
             if Cap.LIVE_SPEED in self.caps or Cap.LINE_RATE in self.caps:
                 self.down_tile.set_values(snap.line_down_kbps, snap.down_bps)
                 self.up_tile.set_values(snap.line_up_kbps, snap.up_bps)
+        if snap.online and not getattr(self, "_lan_asked", False):
+            self._lan_asked = True
+            QTimer.singleShot(500, self._read_lan_state)
         alive = bool(snap.online and not snap.error)      # waves flow while the router is reachable
         self.down_tile.set_alive(alive)
         self.up_tile.set_alive(alive)
@@ -473,13 +478,22 @@ class MainWindow(QMainWindow):
                 rows.append((st.get("fw"), tr("ps_fw_ok") if st.get("fw") else tr("ps_fw_no"), "fw"))
                 dns_ok = st.get("public_dns") and not st.get("self_dns")
                 rows.append((dns_ok, tr("ps_dns_ok") if dns_ok else tr("ps_dns_no"), "dns"))
+        lan = self.lan_state
         if mon and mon.status.startswith("error:"):
             rows.append((False, tr("ps_helper_off", err=mon.status[6:]), ""))
+        if lan.get("active"):
+            rows.append((True, tr("ps_router_set", ip=ip), "router_undo"))
+            if mon and mon.receiving:
+                rows.append((True, tr("ps_router_ok", d=len(mon.clients)), ""))
+            else:
+                rows.append((None, tr("ps_router_wait"), ""))
         elif mon and mon.receiving:
             rows.append((True, tr("ps_router_ok", d=len(mon.clients)), ""))
+        elif lan.get("supported"):
+            rows.append((False, tr("ps_router_auto"), "router_setup"))
         else:
             rows.append((False, tr("ps_router_no", ip=ip, gw=self.s.host), ""))
-        sig = (tuple(rows), bool(self._win_task))
+        sig = (tuple(rows), bool(self._win_task), self._lan_busy)
         if sig == self._setup_sig:
             return
         self._setup_sig = sig
@@ -519,6 +533,13 @@ class MainWindow(QMainWindow):
             sw.toggled.connect(lambda on: self._win_action(
                 lambda: winsetup.set_private(self.win_state.get("if", 0), on)))
             h.addWidget(sw, 0, Qt.AlignVCenter)
+        elif kind in ("router_setup", "router_undo"):
+            b = QPushButton(self.tr("ps_router_btn" if kind == "router_setup" else "ps_router_undo"))
+            b.setObjectName("Primary" if kind == "router_setup" else "Ghost")
+            b.setCursor(Qt.PointingHandCursor)
+            b.setEnabled(not self._lan_busy)
+            b.clicked.connect(self._router_setup if kind == "router_setup" else self._router_undo)
+            h.addWidget(b, 0, Qt.AlignVCenter)
         elif kind in ("fw", "dns") and not ok:
             b = QPushButton(self.tr("ps_fw_btn" if kind == "fw" else "ps_dns_btn"))
             b.setObjectName("Primary")
@@ -529,7 +550,61 @@ class MainWindow(QMainWindow):
             h.addWidget(b, 0, Qt.AlignVCenter)
         return w
 
+    def _pc_ids(self):
+        live = {d.mac: d for d in self.snap.devices}
+        return _primary_ipv4() or "", self._this_pc_mac(self.store.device_meta(), live) or ""
+
+    def _read_lan_state(self):
+        if not self.poller or self._lan_busy or self.s.backend == "demo":
+            return
+        ip, mac = self._pc_ids()
+
+        def got(st):
+            self.lan_state = st or {}
+            self._refresh_dns_info()
+        self.poller.call("lan_dns_status", got, lambda e: None, ip, mac)
+
+    def _router_setup(self):
+        ip, mac = self._pc_ids()
+        if not mac:
+            self.toast.show_message(self.tr("ps_failed"), error=True)
+            return
+        if QMessageBox.question(self, APP_NAME, self.tr("ps_router_confirm", ip=ip)) != QMessageBox.Yes:
+            return
+        self._lan_busy = True
+        self._refresh_dns_info()
+
+        def ok(_):
+            self._lan_busy = False
+            self.toast.show_message(self.tr("ps_router_ok_msg"), ms=9000)
+            if not self.dns_mon or self.dns_mon.status != "running":
+                self._start_dns()
+            self._read_lan_state()
+
+        def bad(err):
+            self._lan_busy = False
+            msg = self.tr("ps_router_unsupported") if "unsupported" in err else f"{self.tr('ps_failed')}\n{err}"
+            self.toast.show_message(msg, error=True, ms=15000)
+            self._read_lan_state()
+        self.poller.call("lan_dns_setup", ok, bad, ip, mac)
+
+    def _router_undo(self):
+        self._lan_busy = True
+        self._refresh_dns_info()
+
+        def ok(_):
+            self._lan_busy = False
+            self.toast.show_message(self.tr("ps_router_undone"), ms=8000)
+            self._read_lan_state()
+
+        def bad(err):
+            self._lan_busy = False
+            self.toast.show_message(f"{self.tr('ps_failed')}\n{err}", error=True, ms=15000)
+            self._read_lan_state()
+        self.poller.call("lan_dns_undo", ok, bad)
+
     def _read_win_state(self):
+        self._read_lan_state()
         if sys.platform != "win32" or self._win_task:
             return
         task = Task(winsetup.read_state, _primary_ipv4())

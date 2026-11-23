@@ -48,10 +48,10 @@ class Worker(QObject):
             self.action_done.emit(action, target, False, str(e))
         self.poll()
 
-    @Slot(str)
-    def run_call(self, method: str):
+    @Slot(str, object)
+    def run_call(self, method: str, args=()):
         try:
-            self.call_done.emit(method, getattr(self.backend, method)(), "")
+            self.call_done.emit(method, getattr(self.backend, method)(*(args or ())), "")
         except Exception as e:
             self.call_done.emit(method, None, str(e) or e.__class__.__name__)
 
@@ -67,7 +67,7 @@ class Poller(QObject):
     snapshot = Signal(object)
     action_done = Signal(str, str, bool, str)
     _do = Signal(str, str)
-    _call = Signal(str)
+    _call = Signal(str, object)
     _stop = Signal()
 
     def __init__(self, backend: RouterBackend, interval_sec: int):
@@ -88,10 +88,10 @@ class Poller(QObject):
     def request(self, action: str, target: str):
         self._do.emit(action, target)
 
-    def call(self, method: str, done, failed):
+    def call(self, method: str, done, failed, *args):
         """Run a backend method on the worker thread, reusing the live router session."""
         self._callbacks[method] = (done, failed)
-        self._call.emit(method)
+        self._call.emit(method, args)
 
     def _on_call_done(self, method, result, err):
         done, failed = self._callbacks.pop(method, (None, None))
