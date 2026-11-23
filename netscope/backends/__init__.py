@@ -97,4 +97,6 @@ def create_backend(settings, seed_demo: bool = False) -> RouterBackend:
         prim = GenericBackend(settings.host)
     else:
         prim = DemoBackend(seed_history=seed_demo)
+    from ..profiles import state_tag
+    prim.state_tag = state_tag(settings)        # each saved router has its own undo file
     return SmartBackend(prim)

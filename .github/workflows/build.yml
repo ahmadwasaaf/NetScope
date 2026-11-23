@@ -29,6 +29,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: Core regression tests (saved routers, router DNS setup/undo, DNS helper)
+        run: python -u tests/test_core.py
+
       - name: UI smoke test (demo router, offscreen)
         env:
           QT_QPA_PLATFORM: offscreen

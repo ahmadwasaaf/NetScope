@@ -102,6 +102,21 @@ def run(tag, **settings):
             errors.append(f"{tag}: highlight should be only on the last opened card, got {active}")
         win.grab().toImage().save(os.path.join(OUT, f"{tag}.jpg"), "JPG", 70)
         win.scroll_body.grab().toImage().save(os.path.join(OUT, f"{tag}_page.jpg"), "JPG", 60)
+        if tag == "dark_ar" or tag == "dark_en":       # saved routers list in Settings
+            from netscope.ui.dialogs import SettingsDialog
+            win.s.routers = [
+                {"id": "a1", "name": "Home Router", "model": "Huawei DN8245V-56", "host": "192.168.1.1", "backend": "huawei"},
+                {"id": "b2", "name": "Office Router", "model": "ZTE H188A", "host": "192.168.1.1", "backend": "zte"},
+                {"id": "c3", "name": "Second Home", "model": "TP-Link Archer C6", "host": "192.168.0.1", "backend": "tplink"}]
+            win.s.active_router, win.s.backend = "a1", "huawei"
+            dlg = SettingsDialog(win.tr, win.s, win, tab=1, online=True)
+            dlg.resize(520, 620)
+            dlg.show()
+            app.processEvents()
+            dlg.grab().toImage().save(os.path.join(OUT, f"{tag}_routers.jpg"), "JPG", 75)
+            if dlg.rows_box.count() != 3:
+                errors.append(f"{tag}: routers list shows {dlg.rows_box.count()} rows")
+            dlg.reject()
         win.quit_app()
 
     timers = []

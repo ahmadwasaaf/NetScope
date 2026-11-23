@@ -4,16 +4,16 @@ from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt, QUrl
-from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtGui import QColor, QCursor, QDesktopServices
 from PySide6.QtWidgets import (QCalendarWidget, QCheckBox, QColorDialog, QComboBox, QDialog,
-                               QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
-                               QMessageBox, QPushButton, QSpinBox, QTabWidget,
+                               QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
+                               QMenu, QMessageBox, QPushButton, QSpinBox, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from ..i18n import Translator
 from ..settings import Settings
 from ..theme import ACCENT_PRESETS
-from .widgets import NumberSpin
+from .widgets import NumberSpin, icon_label
 
 
 def npcap_version() -> str:
@@ -105,13 +105,60 @@ class Swatch(QPushButton):
         self.setStyleSheet(f"background:{color}; border-radius:14px; border:{border};")
 
 
+class RouterRow(QFrame):
+    """One saved router in Settings › Router: icon, name, model, status, ⋯ menu."""
+
+    def __init__(self, tr, prof: dict, is_active: bool, status: str, on_pick, on_rename, on_remove):
+        super().__init__()
+        self.setObjectName("RouterRowActive" if is_active else "RouterRow")
+        self.setCursor(Qt.PointingHandCursor)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(12, 10, 10, 10)
+        h.setSpacing(12)
+        h.addWidget(icon_label("wifi", 16))
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        name = QLabel(prof.get("name") or prof.get("router_label") or prof.get("host", ""))
+        name.setStyleSheet("font-size: 13px; font-weight: 700;")
+        col.addWidget(name)
+        model = prof.get("model") or prof.get("router_label") or ""
+        sub = QLabel(" · ".join(x for x in (model, prof.get("host", "")) if x))
+        sub.setObjectName("Muted")
+        col.addWidget(sub)
+        st = QLabel(status)
+        st.setObjectName("Muted")
+        st.setStyleSheet("font-size: 11px;")
+        col.addWidget(st)
+        h.addLayout(col, 1)
+        if is_active:
+            h.addWidget(icon_label("check", 14, "CapOn"))
+        more = QPushButton("⋯")
+        more.setObjectName("Ghost")
+        more.setFixedWidth(36)
+        menu = QMenu(more)
+        menu.addAction(tr("rename")).triggered.connect(lambda: on_rename(prof["id"]))
+        menu.addAction(tr("remove_router")).triggered.connect(lambda: on_remove(prof["id"]))
+        more.clicked.connect(lambda: menu.exec(QCursor.pos()))
+        h.addWidget(more)
+        self._pick = lambda: on_pick(prof["id"])
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._pick()
+
+
 class SettingsDialog(QDialog):
-    def __init__(self, tr: Translator, settings: Settings, parent=None, poller=None):
+    def __init__(self, tr: Translator, settings: Settings, parent=None, poller=None, tab=0,
+                 online=False, router_name=""):
         super().__init__(parent)
         self.tr = tr
         self.poller = poller
-        self.s = replace(settings, nicknames=dict(settings.nicknames))
+        self.s = replace(settings, nicknames=dict(settings.nicknames),
+                         routers=[dict(p) for p in settings.routers])
         self.change_router = False
+        self.switch_to = ""
+        self.remove_id = ""
+        self.online = online
         self.setWindowTitle(tr("settings"))
         self.setMinimumWidth(460)
         v = QVBoxLayout(self)
@@ -160,21 +207,26 @@ class SettingsDialog(QDialog):
         gf.addRow("", self.autostart)
         tabs.addTab(g, tr("general"))
 
-        # ---------------- Router
+        # ---------------- Router: saved routers + options of the one in use
         r = QWidget()
-        rf = QFormLayout(r)
-        rf.setVerticalSpacing(14)
-        name = QLabel(self.s.router_label or self.s.host)
-        name.setObjectName("SectionTitle")
-        rf.addRow(tr("router_card"), name)
-        rf.addRow(tr("address"), QLabel(self.s.host if self.s.backend != "demo" else "—"))
+        rv = QVBoxLayout(r)
+        rv.setSpacing(10)
+        title = QLabel(tr("my_routers"))
+        title.setObjectName("SectionTitle")
+        rv.addWidget(title)
+        self.rows_box = QVBoxLayout()
+        self.rows_box.setSpacing(8)
+        rv.addLayout(self.rows_box)
+        self._fill_routers()
+        add = QPushButton(tr("add_router") + "  +")
+        add.clicked.connect(self._change_router)
+        rv.addWidget(add)
+        rf = QFormLayout()
+        rf.setVerticalSpacing(12)
         self.refresh = QSpinBox()
         self.refresh.setRange(2, 600)
         self.refresh.setValue(self.s.refresh_sec)
         rf.addRow(tr("refresh"), self.refresh)
-        change = QPushButton(tr("change_router"))
-        change.clicked.connect(self._change_router)
-        rf.addRow("", change)
         if self.s.backend == "huawei" and self.poller is not None:
             self.diag_btn = QPushButton(tr("diag"))
             self.diag_btn.setToolTip(tr("diag_tip"))
@@ -184,7 +236,10 @@ class SettingsDialog(QDialog):
             self.undo_btn.setToolTip(tr("undo_all_tip"))
             self.undo_btn.clicked.connect(self._undo_all)
             rf.addRow("", self.undo_btn)
+        rv.addLayout(rf)
+        rv.addStretch(1)
         tabs.addTab(r, tr("router"))
+        tabs.setCurrentIndex(tab)
 
         row = QHBoxLayout()
         row.addStretch(1)
@@ -196,6 +251,40 @@ class SettingsDialog(QDialog):
         row.addWidget(cancel)
         row.addWidget(save)
         v.addLayout(row)
+
+    def _fill_routers(self):
+        while self.rows_box.count():
+            w = self.rows_box.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        if not self.s.routers:
+            empty = QLabel(self.tr("no_routers"))
+            empty.setObjectName("Muted")
+            self.rows_box.addWidget(empty)
+        for p in self.s.routers:
+            act = p["id"] == self.s.active_router and self.s.backend != "demo"
+            status = self.tr("rt_connected" if act and self.online else ("rt_in_use" if act else "rt_saved"))
+            self.rows_box.addWidget(RouterRow(self.tr, p, act, status, self._pick_router,
+                                              self._rename_router, self._remove_router))
+
+    def _pick_router(self, pid):
+        if pid != self.s.active_router or self.s.backend == "demo":
+            self.switch_to = pid
+            self.accept()
+
+    def _rename_router(self, pid):
+        p = next((x for x in self.s.routers if x["id"] == pid), None)
+        if not p:
+            return
+        text, ok = QInputDialog.getText(self, "NetScope", self.tr("rename"),
+                                        text=p.get("name") or p.get("router_label") or "")
+        if ok and text.strip():
+            p["name"] = text.strip()[:40]
+            self._fill_routers()
+
+    def _remove_router(self, pid):
+        self.remove_id = pid
+        self.accept()
 
     def _build_swatches(self):
         while self.swatch_row.count():

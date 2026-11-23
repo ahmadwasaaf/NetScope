@@ -18,7 +18,7 @@ CAP_ORDER = [Cap.TOTAL_USAGE, Cap.LIVE_SPEED, Cap.DEVICE_LIST, Cap.DEVICE_USAGE,
 DEFAULT_USER = {"tplink": "admin", "huawei": "admin", "openwrt": "root", "generic": "", "demo": ""}
 
 
-def caps_widget(tr: Translator, caps) -> QWidget:
+def caps_widget(tr: Translator, caps, tested=None) -> QWidget:
     w = QWidget()
     v = QVBoxLayout(w)
     v.setContentsMargins(0, 0, 0, 0)
@@ -30,7 +30,13 @@ def caps_widget(tr: Translator, caps) -> QWidget:
         row.addWidget(ic)
         lbl = QLabel(tr(f"cap_{c}"))
         lbl.setObjectName("CapOn" if on else "CapOff")
-        row.addWidget(lbl, 1)
+        row.addWidget(lbl)
+        if on and tested is not None:
+            t = QLabel(tr("cap_tested") if c in tested else tr("cap_untested"))
+            t.setObjectName("Muted")
+            t.setStyleSheet("font-size: 11px;")
+            row.addWidget(t)
+        row.addStretch(1)
         v.addLayout(row)
     return w
 

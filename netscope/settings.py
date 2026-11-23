@@ -46,12 +46,20 @@ class Settings:
     refresh_sec: int = 10
     devices_open: bool = True
     sites_open: bool = False
+    routers: list = field(default_factory=list)     # saved routers (see profiles.py)
+    active_router: str = ""                         # id of the router in use
 
     # ---------- password (never written to the JSON file) ----------
+    def _pw_key(self) -> str:
+        return f"profile:{self.active_router}" if self.active_router else f"{self.username}@{self.host}"
+
     def get_password(self) -> str:
         if keyring:
             try:
-                return keyring.get_password(KEYRING_SERVICE, f"{self.username}@{self.host}") or ""
+                pw = keyring.get_password(KEYRING_SERVICE, self._pw_key())
+                if pw is None and self.active_router:       # router saved by an older version
+                    pw = keyring.get_password(KEYRING_SERVICE, f"{self.username}@{self.host}")
+                return pw or ""
             except Exception:
                 return ""
         return ""
@@ -59,7 +67,7 @@ class Settings:
     def set_password(self, pwd: str) -> None:
         if keyring:
             try:
-                keyring.set_password(KEYRING_SERVICE, f"{self.username}@{self.host}", pwd)
+                keyring.set_password(KEYRING_SERVICE, self._pw_key(), pwd)
             except Exception:
                 pass
 

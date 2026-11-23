@@ -646,6 +646,8 @@ class HuaweiBackend(RouterBackend):
         time.sleep(1)
         if mac not in self._mac_entries(self._mac_filter_page()):
             raise RuntimeError("The router did not accept the MAC filter rule on this firmware")
+        ours = set(self._state_get("blocked_by_netscope") or [])
+        self._state_set("blocked_by_netscope", sorted(ours | {mac}))
 
     def unblock_device(self, mac: str) -> None:
         self._heavy_at = None
@@ -657,6 +659,8 @@ class HuaweiBackend(RouterBackend):
         time.sleep(1)
         if mac in self._mac_entries(self._mac_filter_page()):
             raise RuntimeError("The router did not remove the MAC filter rule")
+        ours = set(self._state_get("blocked_by_netscope") or [])
+        self._state_set("blocked_by_netscope", sorted(ours - {mac}))
 
     # Website blocking = the router's own Parental Control URL filter.
     # Safety rules:
@@ -730,6 +734,7 @@ class HuaweiBackend(RouterBackend):
             if entries:
                 self.s.submit("del.cgi", "", MACFILTER_PAGE, {p: "" for p in entries.values()})
                 done.append(f"MAC filter: removed {len(entries)} blocked device(s)")
+            self._state_set("blocked_by_netscope", [])
             fields = form_fields(page)
             right = next((f for f in fields if "Mac" in f and "Right" in f), None)
             if right:
@@ -900,7 +905,7 @@ class HuaweiBackend(RouterBackend):
     # small persistent state (survives restarts) ------------------------------
     def _state_file(self):
         from ..settings import data_dir
-        safe_host = re.sub(r"[^\w.-]", "_", self.s.host)
+        safe_host = re.sub(r"[^\w.-]", "_", getattr(self, "state_tag", "") or self.s.host)
         return data_dir() / f"huawei_{safe_host}.json"
 
     def _state_get(self, key):

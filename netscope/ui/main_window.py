@@ -13,7 +13,7 @@ import re
 import sys
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QIcon
+from PySide6.QtGui import QAction, QCursor, QDesktopServices, QGuiApplication, QIcon
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QInputDialog, QLabel, QLayout, QSizePolicy,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
                                QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget)
@@ -30,7 +30,8 @@ from ..poller import Poller, Task
 from ..settings import Settings, data_dir
 from ..store import UsageStore
 from ..theme import make_palette, stylesheet
-from .. import winsetup
+from .. import profiles, winsetup
+from ..backends.verified import tested as tested_caps
 from .dialogs import DateDialog, SettingsDialog, npcap_version
 from .widgets import (GLYPH, CollapsibleSection, DeviceCard, Gauge, SpeedTile, Switch, Toast, ask_number, fmt_size,
                       icon_label,
@@ -86,6 +87,8 @@ class MainWindow(QMainWindow):
             self.s.dns_monitor = True
             self.s.ui_version = 2
             self.s.save()
+        if profiles.migrate(self.s):                # single router of older versions -> first profile
+            self.s.save()
         self.poller = None
         self.snap = Snapshot(online=False)
         self.connected_once = False
@@ -121,6 +124,12 @@ class MainWindow(QMainWindow):
         self.win_timer.timeout.connect(self._read_win_state)
         self.win_timer.start(60000)
         QTimer.singleShot(1500, self._read_win_state)
+        self._net_task = None
+        self._unknown_macs: set = set()
+        self.net_timer = QTimer(self)
+        self.net_timer.timeout.connect(self._check_network)
+        self.net_timer.start(20000)
+        QTimer.singleShot(6000, self._check_network)
         if not start_hidden:
             self.show()
         if not self.s.onboarded:
@@ -130,8 +139,13 @@ class MainWindow(QMainWindow):
 
     # ================================================================ setup
     def _open_store(self):
-        tag = "demo" if self.s.backend == "demo" else re.sub(r"[^\w.-]", "_", f"{self.s.backend}_{self.s.host}")
-        self.store = UsageStore(data_dir() / f"usage_{tag}.db")
+        old = getattr(self, "store", None)
+        self.store = UsageStore(data_dir() / f"usage_{profiles.store_tag(self.s)}.db")
+        if old is not None:
+            try:
+                old.db.close()
+            except Exception:
+                pass
 
     def _apply_look(self):
         self.tr = Translator(self.s.language)
@@ -215,6 +229,8 @@ class MainWindow(QMainWindow):
         self.router_section.toggled.connect(lambda o: self._remember("router_open", o))
         self.router_section.toggled.connect(lambda o: o and self._read_win_state())
         self.router_section.anim.finished.connect(self._schedule_fit)
+        self.router_section.badge.setCursor(Qt.PointingHandCursor)
+        self.router_section.badge.mousePressEvent = lambda e: self._router_menu()
         self.router_box = QWidget()
         rv = QVBoxLayout(self.router_box)
         rv.setContentsMargins(10, 0, 10, 4)
@@ -447,7 +463,9 @@ class MainWindow(QMainWindow):
         self._check_alarm(used_gb)
 
         # ---- router
-        self.router_section.badge.setText(self.snap.router_name or self.s.router_label or "")
+        prof = profiles.active(self.s)
+        label = (prof or {}).get("name") or self.snap.router_name or self.s.router_label or ""
+        self.router_section.badge.setText(f"{label}  ▾" if len(self.s.routers) > 1 else label)
         self.router_ip.setText(self.s.host if self.s.backend != "demo" else tr("demo_note"))
         if self.snap.line_down_kbps:
             self.line_info.setText(tr("line_info", d=f"{self.snap.line_down_kbps / 1000:,.1f}",
@@ -455,13 +473,13 @@ class MainWindow(QMainWindow):
             self.line_info.show()
         else:
             self.line_info.hide()
-        if self._caps_shown != caps:
-            self._caps_shown = set(caps)
+        if self._caps_shown != (caps, self.snap.router_name):
+            self._caps_shown = (set(caps), self.snap.router_name)
             while self.caps_holder.count():
                 w = self.caps_holder.takeAt(0).widget()
                 if w:
                     w.deleteLater()
-            self.caps_holder.addWidget(caps_widget(tr, caps))
+            self.caps_holder.addWidget(caps_widget(tr, caps, tested_caps(self.s.backend, self.snap.router_name)))
 
         self._refresh_dns_info()
         self._refresh_devices()
@@ -569,6 +587,8 @@ class MainWindow(QMainWindow):
         self.poller.call("lan_dns_status", got, lambda e: None, ip, mac)
 
     def _router_setup(self):
+        if self.poller is None:
+            return
         ip, mac = self._pc_ids()
         if not mac:
             self.toast.show_message(self.tr("ps_failed"), error=True)
@@ -593,6 +613,8 @@ class MainWindow(QMainWindow):
         self.poller.call("lan_dns_setup", ok, bad, ip, mac)
 
     def _router_undo(self):
+        if self.poller is None:
+            return
         self._lan_busy = True
         self._refresh_dns_info()
 
@@ -1038,6 +1060,9 @@ class MainWindow(QMainWindow):
                 self.toast.show_message(str(e), error=True)
 
     def _do(self, action: str, target: str, label: str, undo: bool = True):
+        if self.poller is None:
+            self.toast.show_message(self.tr("other_router_here"), error=True)
+            return
         # optimistic update – the next router poll confirms the real state
         {"block_device": self.blocked_macs.add, "unblock_device": self.blocked_macs.discard,
          "block_domain": self.blocked_domains.add, "unblock_domain": self.blocked_domains.discard
@@ -1085,22 +1110,145 @@ class MainWindow(QMainWindow):
         self._detect_task.start()
 
     def _run_wizard(self):
-        wiz = SetupWizard(self.tr, self.p, self.s, self)
+        """Connect a router: it is ADDED as a new saved router (the current one is kept)."""
+        draft = profiles.begin_new(self.s, "")
+        wiz = SetupWizard(self.tr, self.p, draft, self)
         if not wiz.exec():
             return
         new = wiz.result_settings()
+        profiles.commit_new(new)
         new.save()
+        self._apply_settings(new)
+
+    def _apply_settings(self, new):
+        """Start working with another router (or demo): fresh session, its own history."""
         self.s = new
         self.caps, self.blocked_macs, self.blocked_domains = set(), set(), set()
         self.snap = Snapshot(online=False)
+        self.lan_state, self._lan_asked, self._caps_shown = {}, False, None
+        self.open_devices.clear()
         self._open_store()
         self._build()
         self._start_poller()
         if self.dns_mon:
             self._start_dns()
 
-    def _open_settings(self):
-        dlg = SettingsDialog(self.tr, self.s, self, poller=self.poller)
+    # ---------------------------------------------------------------- saved routers
+    def switch_router(self, pid, auto=False):
+        if pid == self.s.active_router and self.s.backend != "demo":
+            return
+        profiles.save_active(self.s)
+        if not profiles.activate(self.s, pid):
+            return
+        self.s.save()
+        self._apply_settings(self.s)
+        p = profiles.find(self.s, pid) or {}
+        self.toast.show_message(self.tr("switched_auto" if auto else "switched",
+                                        name=p.get("name") or p.get("router_label") or p.get("host", "")))
+
+    def _router_menu(self):
+        if not self.s.routers:
+            return
+        m = QMenu(self)
+        for p in self.s.routers:
+            name = p.get("name") or p.get("router_label") or p.get("host", "")
+            act = m.addAction(("✓  " if p["id"] == self.s.active_router else "     ") + name)
+            act.triggered.connect(lambda _=False, pid=p["id"]: self.switch_router(pid))
+        m.addSeparator()
+        m.addAction(self.tr("add_router")).triggered.connect(self._run_wizard)
+        m.addAction(self.tr("manage_routers")).triggered.connect(lambda: self._open_settings(tab=1))
+        m.exec(QCursor.pos())
+
+    def _check_network(self):
+        """Which router is this network's gateway? Remember it, switch to a known one,
+        offer to add an unknown one. Reading/connecting is automatic; changing a router's
+        settings never is."""
+        if self._net_task is not None or self.s.backend == "demo" and not self.s.routers:
+            return
+        from ..backends.detect import default_gateway
+        from ..backends.generic import arp_table
+
+        def probe():
+            gw = default_gateway()
+            return gw, arp_table().get(gw, "")
+        self._net_task = Task(probe)
+
+        def done(res):
+            self._net_task = None
+            gw, mac = res or ("", "")
+            if not mac:
+                return
+            prof = profiles.active(self.s)
+            if prof and gw == self.s.host and not prof.get("gw_mac") and self.snap.online:
+                profiles.set_identity(self.s, prof["id"], mac, self.snap.router_name)
+                self.s.save()
+                return
+            if prof and prof.get("gw_mac", "").lower() == mac.lower():
+                if self.poller is None:                 # back on this router's network
+                    self._start_poller()
+                return
+            other = profiles.by_mac(self.s, mac)
+            if prof and prof.get("gw_mac") and gw == self.s.host and not other and self.poller is not None:
+                # same address, different router: don't try the saved password on it
+                self.poller.shutdown()
+                self.poller = None
+                self.snap = Snapshot(online=False, error=self.tr("other_router_here"))
+                self._refresh_view()
+            if other and other["id"] != self.s.active_router:
+                self.switch_router(other["id"], auto=True)
+            elif not other and mac not in self._unknown_macs and (prof is None or prof.get("gw_mac")):
+                self._unknown_macs.add(mac)
+                self.toast.show_message(self.tr("new_router_here", ip=gw), self.tr("add_router"),
+                                        self._run_wizard, ms=20000)
+        self._net_task.done.connect(done)
+        self._net_task.failed.connect(lambda e: setattr(self, "_net_task", None))
+        self._net_task.start()
+
+    def remove_router(self, pid):
+        p = profiles.find(self.s, pid)
+        if not p:
+            return
+        name = p.get("name") or p.get("router_label") or p.get("host", "")
+        pending = profiles.pending_changes(p)
+        is_active = pid == self.s.active_router
+        if pending and is_active and self.snap.online:
+            ans = QMessageBox.question(self, APP_NAME, self.tr("remove_pending_active", name=name),
+                                       QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+            if ans == QMessageBox.Cancel:
+                return
+            if ans == QMessageBox.Yes:
+                def undone(text):
+                    self._finish_remove(pid)
+                self.poller.call("undo_all", undone,
+                                 lambda e: self.toast.show_message(f"{self.tr('ps_failed')}\n{e}", error=True, ms=15000))
+                return
+        elif pending:
+            if QMessageBox.warning(self, APP_NAME, self.tr("remove_pending_other", name=name),
+                                   QMessageBox.Yes | QMessageBox.Cancel) != QMessageBox.Yes:
+                return
+        elif QMessageBox.question(self, APP_NAME, self.tr("remove_confirm", name=name)) != QMessageBox.Yes:
+            return
+        self._finish_remove(pid)
+
+    def _finish_remove(self, pid):
+        if pid == self.s.active_router:
+            others = [p for p in self.s.routers if p["id"] != pid]
+            if others:
+                profiles.activate(self.s, others[0]["id"])
+            else:                                   # last router: back to demo until a new one is added
+                self.s.active_router = ""
+                self.s.backend = "demo"
+            self._apply_settings(self.s)            # closes the removed router's history file
+        profiles.remove(self.s, pid)
+        self.s.save()
+        self.toast.show_message(self.tr("router_removed"))
+        if not self.s.routers:
+            QTimer.singleShot(300, self._run_wizard)
+
+    def _open_settings(self, tab=0):
+        profiles.save_active(self.s)
+        dlg = SettingsDialog(self.tr, self.s, self, poller=self.poller, tab=tab,
+                             online=self.snap.online, router_name=self.snap.router_name)
         if not dlg.exec():
             return
         new = dlg.result_settings()
@@ -1115,6 +1263,10 @@ class MainWindow(QMainWindow):
             self._tray_quit.setText(self.tr("tray_quit"))
         if dlg.change_router:
             self._run_wizard()
+        elif dlg.switch_to:
+            self.switch_router(dlg.switch_to)
+        elif dlg.remove_id:
+            self.remove_router(dlg.remove_id)
         elif restart:
             self._start_poller()
 
