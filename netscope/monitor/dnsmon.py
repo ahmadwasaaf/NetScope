@@ -18,7 +18,7 @@ import socket
 import struct
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Dict, List, Optional, Set, Tuple
 
 from .domains import site_of
@@ -74,7 +74,11 @@ class DnsMonitor:
         self.last_query = 0.0
         self.lock = threading.Lock()
         # nid -> [client addr, original id, first sent, last sent, upstream index, query bytes]
+        # nid -> [..., reply socket]
         self.pending: Dict[int, list] = {}
+        self.log = deque(maxlen=600)            # (time, client ip, name, qtype) – kept in memory only
+        self.v6 = False
+        self.sock6 = self.tcp6 = None
         self.next_id = 1
         self.best = 0                            # resolver that answered last (asked first)
         self._stop = threading.Event()
@@ -103,17 +107,38 @@ class DnsMonitor:
         except OSError:
             self.tcp = None
             self.tcp_ok = False
+        try:                                     # IPv6 as well: phones often ask over IPv6
+            self.sock6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            self.sock6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            self.sock6.bind(("::", self.port))
+            self.sock6.settimeout(0.25)
+            self.v6 = True
+            try:
+                self.tcp6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                self.tcp6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                self.tcp6.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self.tcp6.bind(("::", self.port))
+                self.tcp6.listen(32)
+                self.tcp6.settimeout(0.5)
+            except OSError:
+                self.tcp6 = None
+        except (OSError, AttributeError):
+            self.sock6 = None
+            self.v6 = False
         self._stop.clear()
         self.status = "running"
-        threading.Thread(target=self._from_clients, name="NetScope-DNS-in", daemon=True).start()
+        threading.Thread(target=self._from_clients, args=(self.sock,), name="NetScope-DNS-in", daemon=True).start()
+        if self.sock6:
+            threading.Thread(target=self._from_clients, args=(self.sock6,), name="NetScope-DNS-in6", daemon=True).start()
         threading.Thread(target=self._from_upstream, name="NetScope-DNS-out", daemon=True).start()
-        if self.tcp:
-            threading.Thread(target=self._tcp_accept, name="NetScope-DNS-tcp", daemon=True).start()
+        for t in (self.tcp, self.tcp6):
+            if t:
+                threading.Thread(target=self._tcp_accept, args=(t,), name="NetScope-DNS-tcp", daemon=True).start()
 
     def stop(self):
         self._stop.set()
         self.status = "off"
-        for s in (self.sock, self.up, self.tcp):
+        for s in (self.sock, self.up, self.tcp, self.sock6, self.tcp6):
             try:
                 s and s.close()
             except OSError:
@@ -131,9 +156,12 @@ class DnsMonitor:
 
     # ------------------------------------------------------------------ counting
     def _count(self, msg: bytes, client_ip: str):
+        client_ip = client_ip.split("%")[0]
         with self.lock:
             self.total_queries += 1
         q = parse_dns(msg)
+        if q and not q[0]:
+            self.log.append((time.time(), client_ip, q[1], _qtype(msg)))
         if q and not q[0] and client_ip not in self.exclude and _qtype(msg) in COUNTED_QTYPES:
             site = site_of(q[1])
             if site:
@@ -143,16 +171,20 @@ class DnsMonitor:
                     self.last_query = time.time()
 
     # ------------------------------------------------------------------ UDP
+    def recent(self):
+        with self.lock:
+            return list(self.log)
+
     def _send_up(self, nid: int, entry: list):
         try:
             self.up.sendto(struct.pack("!H", nid) + entry[5][2:], self.upstreams[entry[4] % len(self.upstreams)])
         except OSError:
             pass
 
-    def _from_clients(self):
+    def _from_clients(self, sock):
         while not self._stop.is_set():
             try:
-                msg, addr = self.sock.recvfrom(65535)
+                msg, addr = sock.recvfrom(65535)
             except socket.timeout:
                 self._retry()
                 continue
@@ -167,7 +199,7 @@ class DnsMonitor:
             with self.lock:
                 nid = self.next_id
                 self.next_id = 1 if self.next_id >= 0xFFFF else self.next_id + 1
-                entry = [addr, struct.unpack("!H", msg[:2])[0], now, now, self.best, msg]
+                entry = [addr, struct.unpack("!H", msg[:2])[0], now, now, self.best, msg, sock]
                 self.pending[nid] = entry
             self._send_up(nid, entry)
             self._retry()
@@ -192,7 +224,7 @@ class DnsMonitor:
                         self.best = self.upstreams.index(src)
             if entry:
                 try:
-                    self.sock.sendto(struct.pack("!H", entry[1]) + msg[2:], entry[0])
+                    entry[6].sendto(struct.pack("!H", entry[1]) + msg[2:], entry[0])
                 except OSError:
                     pass
 
@@ -212,10 +244,10 @@ class DnsMonitor:
             self._send_up(nid, e)
 
     # ------------------------------------------------------------------ TCP
-    def _tcp_accept(self):
+    def _tcp_accept(self, lsock):
         while not self._stop.is_set():
             try:
-                conn, addr = self.tcp.accept()
+                conn, addr = lsock.accept()
             except socket.timeout:
                 continue
             except OSError:

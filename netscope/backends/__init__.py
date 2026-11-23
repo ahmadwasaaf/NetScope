@@ -57,15 +57,20 @@ class SmartBackend(RouterBackend):
     def unblock_domain(self, d): self.primary.unblock_domain(d)
     def close(self): self.primary.close()
 
-    def lan_dns_status(self, pc_ip, pc_mac):
+    def lan_dns_status(self, pc_ip, pc_mac, pc_v6=""):
         if not hasattr(self.primary, "lan_dns_status"):
             return {"supported": False}
-        return self.primary.lan_dns_status(pc_ip, pc_mac)
+        return self.primary.lan_dns_status(pc_ip, pc_mac, pc_v6)
 
-    def lan_dns_setup(self, pc_ip, pc_mac):
+    def lan_dns_setup(self, pc_ip, pc_mac, pc_v6=""):
         if not hasattr(self.primary, "lan_dns_setup"):
             raise NotImplementedError("This router type can't be set up automatically yet")
-        return self.primary.lan_dns_setup(pc_ip, pc_mac)
+        return self.primary.lan_dns_setup(pc_ip, pc_mac, pc_v6)
+
+    def lan_dns_v6(self, pc_v6):
+        if not hasattr(self.primary, "lan_dns_v6"):
+            return "unsupported"
+        return self.primary.lan_dns_v6(pc_v6)
 
     def lan_dns_undo(self):
         if not hasattr(self.primary, "lan_dns_undo"):

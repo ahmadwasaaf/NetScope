@@ -11,6 +11,7 @@ was not running, adds the usage the router counted meanwhile.
 import ctypes
 import re
 import sys
+import time
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QCursor, QDesktopServices, QGuiApplication, QIcon
@@ -98,12 +99,16 @@ class MainWindow(QMainWindow):
         self.open_devices: set = set()
         self._sys_open: set = set()            # cards whose "System services" row is open
         self.active_key = None                 # the one card the user picked last (highlighted)
+        self._v6_macs, self._v6_wait, self._v6_at = {}, {}, 0.0
         self.user_closed: set = set()          # devices the user closed by hand (not re-opened automatically)
         self.cards = {}
         self._quitting = False
         self._tray_hint_shown = False
         avail = QGuiApplication.primaryScreen().availableGeometry() if QGuiApplication.primaryScreen() else None
-        self.resize(600, min(940, avail.height() - 60) if avail else 900)   # never taller than the screen
+        aw, ah = (avail.width(), avail.height()) if avail else (1280, 960)
+        w, h = self.s.win_w or min(1120, aw - 80), self.s.win_h or min(900, ah - 60)
+        self.resize(max(520, min(w, aw)), max(480, min(h, ah - 20)))   # never bigger than the screen
+        self._win_size = None
         self.setMinimumWidth(520)
         self._open_store()
         self._apply_look()
@@ -210,18 +215,30 @@ class MainWindow(QMainWindow):
         outer.setSpacing(12)
         outer.addWidget(self._header())
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # content follows the window width
-        outer.addWidget(scroll, 1)
-        body = QWidget()
-        body.setObjectName("ScrollBody")
-        scroll.setWidget(body)
-        self.scroll, self.scroll_body = scroll, body
-        col = QVBoxLayout(body)
-        col.setContentsMargins(0, 0, 0, 80)          # room to scroll the last card fully into view
-        col.setSpacing(12)
+        def column():
+            sc = QScrollArea()
+            sc.setWidgetResizable(True)
+            sc.setFrameShape(QFrame.NoFrame)
+            sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # content follows the window width
+            b = QWidget()
+            b.setObjectName("ScrollBody")
+            sc.setWidget(b)
+            lay = QVBoxLayout(b)
+            lay.setContentsMargins(0, 0, 0, 80)      # room to scroll the last card fully into view
+            lay.setSpacing(12)
+            return sc, b, lay
+
+        # wide window: overview + router on one side, devices & websites on the other
+        cols = QHBoxLayout()
+        cols.setSpacing(14)
+        outer.addLayout(cols, 1)
+        scroll, body, col = column()
+        self.scroll2, self.scroll_body2, self.col2 = column()
+        self.col2.setContentsMargins(0, 0, 0, 24)
+        cols.addWidget(scroll, 1)
+        cols.addWidget(self.scroll2, 1)
+        self.scroll, self.scroll_body, self.col1 = scroll, body, col
+        self._wide = None
         col.addWidget(self._gauge_card())
 
         # ---- router (expandable)
@@ -252,9 +269,19 @@ class MainWindow(QMainWindow):
         self.setup_box = QVBoxLayout()
         self.setup_box.setSpacing(8)
         rv.addLayout(self.setup_box)
+        log_btn = QPushButton(self.tr("dns_log"))
+        log_btn.setObjectName("Ghost")
+        log_btn.setCursor(Qt.PointingHandCursor)
+        log_btn.clicked.connect(self._show_dns_log)
+        lrow = QHBoxLayout()
+        lrow.addWidget(log_btn)
+        lrow.addStretch(1)
+        rv.addSpacing(4)
+        rv.addLayout(lrow)
         self.win_state = {}
         self.lan_state = {}
         self._lan_busy = False
+        self._v6_resynced = False
         self._win_task = None
         self._setup_sig = None
         self._caps_shown = None
@@ -282,16 +309,39 @@ class MainWindow(QMainWindow):
         self._card_order = None
         col.addWidget(self.dev_section)
         col.addStretch(1)
+        self.col2.addStretch(1)
+        self._layout_columns()
 
         self.cards = {}
         self.dev_cards = {}
         self.toast = Toast(root)
         self._refresh_view()
 
+    WIDE_AT = 1000          # px: from this width on, devices & websites get their own column
+
+    def _layout_columns(self):
+        if not hasattr(self, "scroll2"):
+            return
+        wide = self.width() >= self.WIDE_AT
+        if wide == self._wide:
+            return
+        self._wide = wide
+        if wide:
+            self.col1.removeWidget(self.dev_section)
+            self.col2.insertWidget(0, self.dev_section)
+        else:
+            self.col2.removeWidget(self.dev_section)
+            self.col1.insertWidget(self.col1.count() - 1, self.dev_section)
+        self.scroll2.setVisible(wide)
+        self._schedule_fit()
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if hasattr(self, "scroll_body"):
+            self._layout_columns()
             self._schedule_fit()
+            if self.isVisible() and not self.isMaximized():
+                self._win_size = (self.width(), self.height())
         if hasattr(self, "toast") and self.toast.isVisible():
             self.toast.reposition()
 
@@ -505,6 +555,10 @@ class MainWindow(QMainWindow):
             rows.append((False, tr("ps_helper_off", err=mon.status[6:]), ""))
         if lan.get("active"):
             rows.append((True, tr("ps_router_set", ip=ip), "router_undo"))
+            if lan.get("v6_active"):
+                rows.append((True, tr("ps_v6_ok"), ""))
+            elif st.get("v6") and "v6_type" in lan:
+                rows.append((False, tr("ps_v6_no"), "router_v6"))
             if mon and mon.receiving:
                 rows.append((True, tr("ps_router_ok", d=len(mon.clients)), ""))
             else:
@@ -555,6 +609,13 @@ class MainWindow(QMainWindow):
             sw.toggled.connect(lambda on: self._win_action(
                 lambda: winsetup.set_private(self.win_state.get("if", 0), on)))
             h.addWidget(sw, 0, Qt.AlignVCenter)
+        elif kind == "router_v6":
+            b = QPushButton(self.tr("ps_v6_btn"))
+            b.setObjectName("Primary")
+            b.setCursor(Qt.PointingHandCursor)
+            b.setEnabled(not self._lan_busy)
+            b.clicked.connect(self._router_v6)
+            h.addWidget(b, 0, Qt.AlignVCenter)
         elif kind in ("router_setup", "router_undo"):
             b = QPushButton(self.tr("ps_router_btn" if kind == "router_setup" else "ps_router_undo"))
             b.setObjectName("Primary" if kind == "router_setup" else "Ghost")
@@ -580,11 +641,37 @@ class MainWindow(QMainWindow):
         if not self.poller or self._lan_busy or self.s.backend == "demo":
             return
         ip, mac = self._pc_ids()
+        v6 = self.win_state.get("v6", "")
 
         def got(st):
             self.lan_state = st or {}
             self._refresh_dns_info()
-        self.poller.call("lan_dns_status", got, lambda e: None, ip, mac)
+            # this PC's IPv6 address changed since setup -> keep the router pointing at it
+            if st and st.get("v6_ours") and not st.get("v6_active") and v6 and not self._v6_resynced:
+                self._v6_resynced = True
+                self.poller.call("lan_dns_v6", lambda r: self._read_lan_state(), lambda e: None, v6)
+        self.poller.call("lan_dns_status", got, lambda e: None, ip, mac, v6)
+
+    def _router_v6(self):
+        v6 = self.win_state.get("v6", "")
+        if self.poller is None or not v6:
+            return
+        if QMessageBox.question(self, APP_NAME, self.tr("ps_v6_confirm", ip=v6)) != QMessageBox.Yes:
+            return
+        self._lan_busy = True
+        self._refresh_dns_info()
+
+        def done(res):
+            self._lan_busy = False
+            key = {"ok": "ps_v6_done", "rejected": "ps_v6_rejected"}.get(res, "ps_v6_unsupported")
+            self.toast.show_message(self.tr(key), error=res != "ok", ms=12000)
+            self._read_lan_state()
+
+        def bad(err):
+            self._lan_busy = False
+            self.toast.show_message(f"{self.tr('ps_failed')}\n{err}", error=True, ms=15000)
+            self._read_lan_state()
+        self.poller.call("lan_dns_v6", done, bad, v6)
 
     def _router_setup(self):
         if self.poller is None:
@@ -610,7 +697,7 @@ class MainWindow(QMainWindow):
             msg = self.tr("ps_router_unsupported") if "unsupported" in err else f"{self.tr('ps_failed')}\n{err}"
             self.toast.show_message(msg, error=True, ms=15000)
             self._read_lan_state()
-        self.poller.call("lan_dns_setup", ok, bad, ip, mac)
+        self.poller.call("lan_dns_setup", ok, bad, ip, mac, self.win_state.get("v6", ""))
 
     def _router_undo(self):
         if self.poller is None:
@@ -638,6 +725,8 @@ class MainWindow(QMainWindow):
 
         def got(st):
             self.win_state = st or {"ok": False}
+            if self.dns_mon and self.win_state.get("v6"):
+                self.dns_mon.exclude.add(self.win_state["v6"])
             self._refresh_dns_info()
         task.done.connect(got)
         task.start()
@@ -800,21 +889,23 @@ class MainWindow(QMainWindow):
 
     def _fit_body(self):
         self._fit_pending = False
-        body = getattr(self, "scroll_body", None)
-        if body is None:
+        if getattr(self, "scroll_body", None) is None:
             return
-        for lay in body.findChildren(QLayout):     # drop every cached size, deepest included
-            lay.invalidate()
+        pairs = [(self.scroll, self.scroll_body), (self.scroll2, self.scroll_body2)]
+        for _, body in pairs:
+            for lay in body.findChildren(QLayout):     # drop every cached size, deepest included
+                lay.invalidate()
         for card in list(self.dev_cards.values()) + list(self.cards.values()):   # devices first, then types
             if card.is_open:
                 card.fit_inner()
-        lay = body.layout()
-        lay.activate()
-        w = self.scroll.viewport().width()
-        h = lay.totalHeightForWidth(w) if lay.hasHeightForWidth() else lay.totalSizeHint().height()
-        if h > 0 and h != body.minimumHeight():
-            body.setMinimumHeight(h)
-        body.updateGeometry()
+        for sc, body in pairs:
+            lay = body.layout()
+            lay.activate()
+            w = sc.viewport().width()
+            h = lay.totalHeightForWidth(w) if lay.hasHeightForWidth() else lay.totalSizeHint().height()
+            if h > 0 and h != body.minimumHeight():
+                body.setMinimumHeight(h)
+            body.updateGeometry()
 
     def _sync_cards(self, keys):
         for k in list(self.cards):
@@ -952,17 +1043,60 @@ class MainWindow(QMainWindow):
             changed = True
         if self.dns_mon:
             counts = self.dns_mon.drain()
+            for k, n in self._v6_wait.items():          # IPv6 askers whose device wasn't known yet
+                counts[k] = counts.get(k, 0) + n
+            self._v6_wait = {}
             if counts:
                 ip_to_mac = {dev.ip: dev.mac for dev in self.snap.devices}
+                unknown6 = False
                 for (ip, site), n in counts.items():
-                    mac = ip_to_mac.get(ip)
+                    mac = ip_to_mac.get(ip) or self._v6_macs.get(ip.lower())
                     if mac:
                         self.store.add("devsite", {f"{mac}|{site}": n})
-                changed = True
+                        changed = True
+                    elif ":" in ip and len(self._v6_wait) < 2000:
+                        self._v6_wait[(ip, site)] = n
+                        unknown6 = True
+                if unknown6:
+                    self._refresh_v6_macs()
         if changed and self.isVisible():
             self._refresh_devices()
         if self.isVisible() and self.dns_mon and not self.dns_mon.receiving:
             self._refresh_dns_info()
+
+    def _show_dns_log(self):
+        from .dialogs import DnsLogDialog
+        from ..monitor.domains import site_of
+        self._refresh_v6_macs()
+        meta = self.store.device_meta()
+        by_ip = {d.ip: d.mac for d in self.snap.devices}
+
+        def name_of(ip):
+            mac = by_ip.get(ip) or self._v6_macs.get(ip.lower())
+            if not mac:
+                return ip
+            return self._display_name(mac, meta.get(mac, ("",))[0]) or ip
+
+        def shown_as(host):
+            site = site_of(host)
+            if not site:
+                return "—"
+            return f"{self.tr('sys_group')} · {site}" if is_system(site) else site
+        DnsLogDialog(self.tr, lambda: self.dns_mon.recent() if self.dns_mon else [], name_of, shown_as, self).exec()
+
+    def _refresh_v6_macs(self):
+        """Which device is behind an IPv6 address (phones asking over IPv6) – Windows' neighbour table."""
+        if getattr(self, "_v6_task", None) is not None or time.monotonic() - self._v6_at < 15:
+            return
+        self._v6_at = time.monotonic()
+        self._v6_task = Task(winsetup.neighbors_v6)
+
+        def got(table):
+            self._v6_task = None
+            self._v6_macs.update(table or {})
+        self._v6_task.done.connect(got)
+        self._v6_task.failed.connect(lambda e: setattr(self, "_v6_task", None))
+        self._v6_task.start()
 
     # ================================================================ alarm
     def _alarm_key(self):
@@ -1272,6 +1406,9 @@ class MainWindow(QMainWindow):
 
     # ================================================================ close = keep running
     def closeEvent(self, e):
+        if getattr(self, "_win_size", None) and (self.s.win_w, self.s.win_h) != self._win_size:
+            self.s.win_w, self.s.win_h = self._win_size
+            self.s.save()
         if self.tray and not self._quitting:
             e.ignore()
             self.hide()

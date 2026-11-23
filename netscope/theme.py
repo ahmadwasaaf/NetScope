@@ -84,6 +84,9 @@ def stylesheet(p: Palette) -> str:
     QCalendarWidget QAbstractItemView {{ background: {p.card}; selection-background-color: {p.accent};
         selection-color: white; }}
     #DevCard, #DevHeader {{ background: transparent; border: none; }}
+    QPushButton#MoreBtn {{ background: transparent; border: none; border-radius: 16px; color: {p.text};
+                           font-size: 20px; font-weight: 700; padding: 0; }}
+    QPushButton#MoreBtn:hover {{ background: {p.hover}; color: {p.accent}; }}
     #RouterRow {{ border: 1px solid {p.border}; border-radius: 12px; }}
     #RouterRow:hover {{ background: {p.hover}; }}
     #RouterRowActive {{ border: 2px solid {p.accent}; border-radius: 12px; }}

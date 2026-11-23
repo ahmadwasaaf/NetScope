@@ -63,6 +63,14 @@ SYSTEM_SITES = {
 }
 
 
+HOST_ALIASES = [
+    (re.compile(r"^(youtubei|youtube|youtubeanalytics|yt3)\.(googleapis|ggpht)\.com$"), "youtube.com"),
+    (re.compile(r"^(www\.)?youtube\.googleapis\.com$"), "youtube.com"),
+    (re.compile(r"^(instagram|i\.instagram)\.c10r\.facebook\.com$"), "instagram.com"),
+    (re.compile(r"(^|\.)whatsapp\.(net|com)$"), "whatsapp.com"),
+]
+
+
 def is_system(site: str) -> bool:
     return site in SYSTEM_SITES
 
@@ -85,6 +93,9 @@ def site_of(host: str):
     h = host.lower().rstrip(".")
     if IGNORE.search(h) or not HOST_RE.match(h):
         return None
+    for rx, site in HOST_ALIASES:              # app APIs that live on shared infrastructure
+        if rx.search(h):
+            return site
     b = base_domain(h)
     return ALIASES.get(b, b)
 

@@ -101,8 +101,9 @@ def test_lan_dns():
         host = "192.168.1.1"
         lock = th.Lock()
 
-        def __init__(self, dns="", accept_dns=True):
+        def __init__(self, dns="", accept_dns=True, accept_v6=True):
             self.dns, self.statics, self.n, self.accept_dns = dns, {}, 0, accept_dns
+            self.v6type, self.v6servers, self.accept_v6 = "HGWProxy", "", accept_v6
 
         def page(self, path):
             if path == H.LAN_DNS_PAGE:
@@ -113,6 +114,12 @@ def test_lan_dns():
                         f'"","","","","","","","","{self.dns}","0","","0"),null);'
                         "Form.addParameter('y.DNSServers', a); Form.addParameter('z.X_HW_DNSList', b);"
                         "url = 'set.cgi?' + '&z=" + LH + "' + '&RequestFile=' + RequestFile;")
+            if path == H.LAN_V6_PAGE:
+                return ('function IPv6DNSConfigClass(domain, DomainName, IPv6DNSConfigType, IPv6DNSWANConnection, '
+                        'IPv6DNSServers) {} var C = new Array(new IPv6DNSConfigClass('
+                        f'"InternetGatewayDevice.LANDevice.1.X_HW_IPv6Config","","{self.v6type}","","{self.v6servers}"),null);'
+                        '<select id="DnsSrc"><option value="HGWProxy">DNS agent</option>'
+                        '<option value="WANConnection">WAN</option><option value="Static">Static</option></select>')
             if path == H.STATIC_PAGE:
                 objs = ",".join(f'new stDhcp("{d}","1","{ip}","{m}")' for m, (d, ip) in self.statics.items())
                 return 'function stDhcp(domain, Enable, ipAddress, macAddress) {} var D = new Array(' + objs + \
@@ -134,6 +141,8 @@ def test_lan_dns():
                     self.statics = {m: v for m, v in self.statics.items() if v[0] != k}
 
         def _request(self, method, q, body):
+            if q.startswith("set.cgi?p=") and (self.accept_v6 or body["p.IPv6DNSConfigType"] == "HGWProxy"):
+                self.v6type, self.v6servers = body["p.IPv6DNSConfigType"], body["p.IPv6DNSServers"]
             if self.accept_dns and q.startswith("set.cgi?z=" + LH + "&"):
                 self.dns = body["z.X_HW_DNSList"]
 
@@ -160,6 +169,21 @@ def test_lan_dns():
     b.lan_dns_setup("192.168.1.2", "aa:bb:cc:dd:ee:ff")
     b.lan_dns_undo()
     check("user's own reservation kept", len(b.s.statics) == 1)
+
+    # IPv6 side
+    b._state_set("lan_dns_backup", None)
+    b.s = Fake(dns="")
+    r = b.lan_dns_setup("192.168.1.2", "aa:bb:cc:dd:ee:ff", "fe80::1234:5678")
+    check("IPv6 DNS points at this PC", "IPv6: ok" in r and b.s.v6type == "Static" and b.s.v6servers == "fe80::1234:5678")
+    st = b.lan_dns_status("192.168.1.2", "aa:bb:cc:dd:ee:ff", "fe80::1234:5678")
+    check("status sees IPv6 active", st["v6_active"] and st["v6_ours"])
+    check("PC address change -> re-sync keeps original backup",
+          b.lan_dns_v6("fe80::9") == "ok" and b._state_get("lan_v6_backup")["type"] == "HGWProxy")
+    b.lan_dns_undo()
+    check("undo restores IPv6 DNS agent", b.s.v6type == "HGWProxy" and b.s.v6servers == "" and b.s.dns == "")
+    b.s = Fake(dns="", accept_v6=False)
+    check("IPv6 rejected -> left as it was", b.lan_dns_v6("fe80::1") == "rejected" and b.s.v6type == "HGWProxy"
+          and b._state_get("lan_v6_backup") is None)
 
 
 def test_dns_helper():
@@ -216,6 +240,17 @@ def test_dns_helper():
         while len(buf) < n:
             buf += s.recv(n - len(buf))
         check("TCP: very big answer", len(buf) > 15000 and buf[:2] == b"\x43\x21")
+    if mon.v6 and socket.has_ipv6:
+        try:
+            c6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            c6.settimeout(5)
+            c6.sendto(q("www.instagram.com", 0x2222), ("::1", mon.port))
+            r, _ = c6.recvfrom(65535)
+            check("IPv6: answered and counted", r[:2] == b"\x22\x22"
+                  and any(site == "instagram.com" for (_, site) in mon.drain()))
+        except OSError as e:
+            print("skip IPv6 loopback test:", e)
+    check("DNS log keeps recent names", any(n == "www.youtube.com" for _, _, n, _ in mon.recent()))
     mon.stop()
 
 

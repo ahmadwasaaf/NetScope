@@ -117,6 +117,26 @@ def run(tag, **settings):
             if dlg.rows_box.count() != 3:
                 errors.append(f"{tag}: routers list shows {dlg.rows_box.count()} rows")
             dlg.reject()
+        if tag == "dark_en":                            # wide window: two columns
+            win.resize(1240, 860)
+            app.processEvents()
+            win._fit_body()
+            app.processEvents()
+            if not win._wide or not win.scroll2.isVisible():
+                errors.append("wide window did not switch to two columns")
+            win.grab().toImage().save(os.path.join(OUT, "wide.jpg"), "JPG", 70)
+            from netscope.ui.dialogs import DnsLogDialog
+            import time as _t
+            fake = [(_t.time() - i * 7, "192.168.1.3", n, 1) for i, n in enumerate(
+                ["i.instagram.com", "rr3---sn-x.googlevideo.com", "youtubei.googleapis.com",
+                 "connectivitycheck.gstatic.com", "graph.facebook.com"])]
+            d2 = DnsLogDialog(win.tr, lambda: fake, lambda ip: "Ahmed-s-A15", lambda h: h, win)
+            d2.show()
+            app.processEvents()
+            d2.grab().toImage().save(os.path.join(OUT, "dnslog.jpg"), "JPG", 75)
+            if d2.table.rowCount() != 5:
+                errors.append(f"DNS log shows {d2.table.rowCount()} rows")
+            d2.reject()
         win.quit_app()
 
     timers = []

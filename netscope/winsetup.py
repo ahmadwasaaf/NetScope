@@ -36,13 +36,14 @@ $a = Get-NetIPAddress -AddressFamily IPv4 -IPAddress '{my_ip}' | Select-Object -
 $i = $a.InterfaceIndex
 $p = (Get-NetConnectionProfile -InterfaceIndex $i | Select-Object -First 1).NetworkCategory
 $d = @((Get-DnsClientServerAddress -InterfaceIndex $i -AddressFamily IPv4).ServerAddresses)
+$v6 = (Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv6 | Where-Object { $_.IPAddress -like 'fe80*' } | Select-Object -First 1).IPAddress
 $f = 0
 foreach ($n in @('{FW_NAME} (UDP)', '{FW_NAME} (TCP)')) {{
   netsh advfirewall firewall show rule name="$n" dir=in | Out-Null
   if ($LASTEXITCODE -eq 0) {{ $f++ }}
 }}
 if ($f -lt 2) {{ $f = @(Get-NetFirewallRule -DisplayName '{FW_NAME}*').Count }}
-@{{ if = $i; profile = "$p"; dns = $d; fw = $f }} | ConvertTo-Json -Compress
+@{{ if = $i; profile = "$p"; dns = $d; fw = $f; v6 = "$v6" }} | ConvertTo-Json -Compress
 """
     try:
         out = _ps(script)
@@ -60,7 +61,31 @@ if ($f -lt 2) {{ $f = @(Get-NetFirewallRule -DisplayName '{FW_NAME}*').Count }}
         "self_dns": my_ip in dns or "127.0.0.1" in dns,
         "public_dns": any(d in ("1.1.1.1", "8.8.8.8", "9.9.9.9", "1.0.0.1", "8.8.4.4") for d in dns),
         "fw": int(data.get("fw") or 0) >= 2,
+        "v6": (data.get("v6") or "").split("%")[0],
     }
+
+
+def neighbors_v6() -> dict:
+    """IPv6 address -> MAC of devices this PC has talked to (to name phones that ask over IPv6)."""
+    if sys.platform != "win32":
+        return {}
+    script = ("Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | "
+              "Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' } | "
+              "Select-Object IPAddress, LinkLayerAddress | ConvertTo-Json -Compress")
+    try:
+        out = _ps(script)
+        rows = json.loads(out) if out else []
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    if isinstance(rows, dict):
+        rows = [rows]
+    res = {}
+    for r in rows:
+        ip = (r.get("IPAddress") or "").split("%")[0].lower()
+        mac = (r.get("LinkLayerAddress") or "").replace("-", ":").lower()
+        if ip and len(mac) == 17 and not mac.startswith("33:33"):
+            res[ip] = mac
+    return res
 
 
 def run_elevated(script: str, timeout_ms: int = 60000) -> int:

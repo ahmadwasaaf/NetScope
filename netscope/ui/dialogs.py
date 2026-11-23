@@ -105,6 +105,69 @@ class Swatch(QPushButton):
         self.setStyleSheet(f"background:{color}; border-radius:14px; border:{border};")
 
 
+class DnsLogDialog(QDialog):
+    """Recent DNS lookups NetScope's helper received – to see exactly what reaches it."""
+
+    def __init__(self, tr, fetch, name_of, shown_as, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget, QTableWidgetItem
+        self._Item = QTableWidgetItem
+        self.tr, self.fetch, self.name_of, self.shown_as = tr, fetch, name_of, shown_as
+        self.setWindowTitle(tr("dns_log"))
+        self.resize(760, 560)
+        v = QVBoxLayout(self)
+        top = QHBoxLayout()
+        t = QLabel(tr("dns_log_title"))
+        t.setObjectName("SectionTitle")
+        top.addWidget(t, 1)
+        self.dev = QComboBox()
+        self.dev.currentIndexChanged.connect(self._fill)
+        top.addWidget(self.dev)
+        again = QPushButton("⟳")
+        again.setFixedWidth(40)
+        again.clicked.connect(self._load)
+        top.addWidget(again)
+        v.addLayout(top)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels([tr("dns_log_time"), tr("dns_log_device"),
+                                              tr("dns_log_name"), tr("dns_log_shown")])
+        self.table.verticalHeader().hide()
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.Stretch)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        v.addWidget(self.table, 1)
+        self.empty = QLabel(tr("dns_log_empty"))
+        self.empty.setObjectName("Muted")
+        v.addWidget(self.empty)
+        self._load()
+
+    def _load(self):
+        self.rows = [(t, ip, self.name_of(ip), name) for t, ip, name, _ in reversed(self.fetch())]
+        cur = self.dev.currentData()
+        self.dev.blockSignals(True)
+        self.dev.clear()
+        self.dev.addItem(self.tr("dns_log_all"), "")
+        for dev in sorted({r[2] for r in self.rows}):
+            self.dev.addItem(dev, dev)
+        i = self.dev.findData(cur) if cur else 0
+        self.dev.setCurrentIndex(max(0, i))
+        self.dev.blockSignals(False)
+        self._fill()
+
+    def _fill(self):
+        want = self.dev.currentData()
+        rows = [r for r in self.rows if not want or r[2] == want][:400]
+        self.table.setRowCount(len(rows))
+        for i, (t, ip, dev, name) in enumerate(rows):
+            for j, val in enumerate((datetime.fromtimestamp(t).strftime("%H:%M:%S"), dev, name, self.shown_as(name))):
+                self.table.setItem(i, j, self._Item(val))
+        self.empty.setVisible(not rows)
+
+
 class RouterRow(QFrame):
     """One saved router in Settings › Router: icon, name, model, status, ⋯ menu."""
 
@@ -132,9 +195,11 @@ class RouterRow(QFrame):
         h.addLayout(col, 1)
         if is_active:
             h.addWidget(icon_label("check", 14, "CapOn"))
-        more = QPushButton("⋯")
-        more.setObjectName("Ghost")
-        more.setFixedWidth(36)
+        more = QPushButton("⋮")
+        more.setObjectName("MoreBtn")
+        more.setFixedSize(32, 32)
+        more.setCursor(Qt.PointingHandCursor)
+        more.setToolTip(tr("options"))
         menu = QMenu(more)
         menu.addAction(tr("rename")).triggered.connect(lambda: on_rename(prof["id"]))
         menu.addAction(tr("remove_router")).triggered.connect(lambda: on_remove(prof["id"]))

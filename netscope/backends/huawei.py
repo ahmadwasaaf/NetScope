@@ -57,6 +57,7 @@ STATIC_PAGE = "html/bbsp/dhcpstatic/dhcpstatic.asp"
 LHCM = "InternetGatewayDevice.LANDevice.1.LANHostConfigManagement"
 STATIC_OBJ = LHCM + ".DHCPStaticAddress"
 SECONDARY_DNS = "1.1.1.1"
+LAN_V6_PAGE = "html/bbsp/lanaddress/lanaddress_tedata.asp"
 STAT_REF = re.compile(r"stat|wan|dsl|flow|traffic", re.I)
 
 
@@ -488,6 +489,10 @@ class HuaweiBackend(RouterBackend):
                 lines += self._parental_probe(js)
             if page in DHCP_PAGES:
                 lines += self._dhcp_probe(js)
+            if page == LAN_V6_PAGE:
+                _, o = self._v6_dns()
+                opts = [v for v in re.findall(r"<option[^>]*value\s*=\s*['\"]([A-Za-z_]{3,20})['\"]", _unescape(js))]
+                lines.append(f"    auto v6 DNS: object {'found' if o else 'not found'}; options: {', '.join(sorted(set(opts))[:30])}; static = {self._v6_static_value(_unescape(js)) or '?'}")
             if page == LAN_DNS_PAGE:
                 form = self._dns_form(js)
                 lines.append(f"    auto DNS form: {form[0] + '.' + form[1] + ' on ' + form[2] if form else 'not found'}")
@@ -819,7 +824,66 @@ class HuaweiBackend(RouterBackend):
         with self.s.lock:
             return self.s._request("POST", f"{query}&RequestFile={request_file}", body)
 
-    def lan_dns_status(self, pc_ip: str, pc_mac: str) -> dict:
+    # ---- IPv6 side: phones get a 2nd DNS server over IPv6 (router's "DNS agent").
+    # NetScope sets it to "Static: this PC" so phones' IPv6 lookups reach it too.
+    # A bonus on top of IPv4: if anything here fails, IPv4 stays set up and v6 is left as it was.
+    def _v6_dns(self):
+        js = _unescape(self.s.get(LAN_V6_PAGE))
+        objs = parse_js_objects(js, "IPv6DNSConfigClass")
+        if not objs or "IPv6DNSConfigType" not in objs[0]:
+            return js, None
+        return js, objs[0]
+
+    @staticmethod
+    def _v6_static_value(js: str) -> str:
+        """The value the page uses for 'Static' in its DNS-source list."""
+        for m in re.finditer(r"<option[^>]*value\s*=\s*['\"]([^'\"]+)['\"][^>]*>([^<]*)", js, re.I):
+            val, text = m.group(1), m.group(2)
+            if re.fullmatch(r"[A-Za-z_]{3,20}", val) and ("static" in val.lower() or "static" in text.lower()):
+                return val
+        return ""
+
+    def _v6_set(self, domain: str, kind: str, servers: str):
+        self._post(f"set.cgi?p={domain}", LAN_V6_PAGE, {"p.IPv6DNSConfigType": kind, "p.IPv6DNSServers": servers})
+        time.sleep(1)
+        _, o = self._v6_dns()
+        return o
+
+    def lan_dns_v6(self, pc_v6: str) -> str:
+        """Point the LAN's IPv6 DNS at this PC (or keep it there if the PC's address changed)."""
+        pc_v6 = (pc_v6 or "").split("%")[0]
+        if ":" not in pc_v6:
+            return "no-ipv6"
+        js, o = self._v6_dns()
+        if not o:
+            return "unsupported"
+        static = self._v6_static_value(js) or ("Static" if "static" in js.lower() else "")
+        if not static:
+            return "unsupported"
+        if self._state_get("lan_v6_backup") is None:
+            self._state_set("lan_v6_backup", {"domain": o["domain"], "type": o.get("IPv6DNSConfigType", ""),
+                                              "servers": o.get("IPv6DNSServers", "")})
+        now = self._v6_set(o["domain"], static, pc_v6)
+        if now and now.get("IPv6DNSConfigType") == static and pc_v6 in (now.get("IPv6DNSServers") or ""):
+            return "ok"
+        b = self._state_get("lan_v6_backup")          # not taken: put it back exactly as it was
+        try:
+            self._v6_set(b["domain"], b["type"], b["servers"])
+        finally:
+            self._state_set("lan_v6_backup", None)
+        return "rejected"
+
+    def _v6_undo(self) -> str:
+        b = self._state_get("lan_v6_backup")
+        if not b:
+            return ""
+        now = self._v6_set(b["domain"], b["type"], b["servers"])
+        if not now or now.get("IPv6DNSConfigType") != b["type"]:
+            raise RuntimeError("The router didn't take back its original IPv6 DNS setting")
+        self._state_set("lan_v6_backup", None)
+        return "IPv6 DNS: original setting restored"
+
+    def lan_dns_status(self, pc_ip: str, pc_mac: str, pc_v6: str = "") -> dict:
         try:
             js = self.s.get(LAN_DNS_PAGE)
         except Exception:
@@ -828,12 +892,23 @@ class HuaweiBackend(RouterBackend):
         cur = self._lan_dns_value(js, form[1]) if form else None
         servers = [x.strip() for x in re.split(r"[,;\s]+", cur or "") if x.strip()]
         st = self._statics()
+        v6 = {}
+        try:
+            _, o = self._v6_dns()
+            if o:
+                v6 = {"v6_type": o.get("IPv6DNSConfigType", ""), "v6_servers": o.get("IPv6DNSServers", "")}
+        except Exception:
+            pass
+        pc_v6 = (pc_v6 or "").split("%")[0]
         return {"supported": bool(form) and cur is not None,
                 "active": bool(servers) and servers[0] == pc_ip,
                 "reserved": st.get(clean_mac(pc_mac), ("", ""))[1] == pc_ip,
-                "backup": self._state_get("lan_dns_backup") is not None}
+                "backup": self._state_get("lan_dns_backup") is not None,
+                "v6_ours": self._state_get("lan_v6_backup") is not None,
+                "v6_active": bool(pc_v6) and pc_v6 in v6.get("v6_servers", ""),
+                **v6}
 
-    def lan_dns_setup(self, pc_ip: str, pc_mac: str) -> str:
+    def lan_dns_setup(self, pc_ip: str, pc_mac: str, pc_v6: str = "") -> str:
         mac = clean_mac(pc_mac)
         if not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", pc_ip or "") or not mac:
             raise RuntimeError("This PC's address or MAC isn't known yet")
@@ -880,10 +955,19 @@ class HuaweiBackend(RouterBackend):
                     pass
             raise
         self._heavy_at = None
-        return f"DNS {value}; reserved {pc_ip}"
+        v6 = ""
+        if pc_v6:
+            try:
+                v6 = self.lan_dns_v6(pc_v6)
+            except Exception as e:                 # IPv4 is done; IPv6 is a bonus
+                v6 = f"error: {e}"
+        return f"DNS {value}; reserved {pc_ip}; IPv6: {v6 or 'skipped'}"
 
     def lan_dns_undo(self) -> str:
         done = []
+        d = self._v6_undo()
+        if d:
+            done.append(d)
         b = self._state_get("lan_dns_backup")
         if b:
             self._post(f"set.cgi?{b['prefix']}={b['obj']}", LAN_DNS_PAGE, {f"{b['prefix']}.{b['field']}": b["value"]})
