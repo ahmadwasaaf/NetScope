@@ -48,6 +48,10 @@ DIAG_PAGES = WAN_STAT_PAGES + [
     "html/bbsp/urlfilter/urlfilter.asp", "html/bbsp/wlanmacfilter/wlanmacfilter.asp",
     "html/bbsp/parentalctrl/parentalctrlstatus_egypt.asp", "index.asp",
 ]
+DHCP_PAGES = ["html/bbsp/dhcp/dhcp_tedata.asp", "html/bbsp/dhcpservercfg/dhcp2.asp",
+              "html/bbsp/dhcpstatic/dhcpstatic.asp", "html/bbsp/dhcpstaticaddr/dhcpstaticaddress.asp",
+              "html/bbsp/lanaddress/lanaddress_tedata.asp"]
+DIAG_PAGES += DHCP_PAGES
 STAT_REF = re.compile(r"stat|wan|dsl|flow|traffic", re.I)
 
 
@@ -414,14 +418,27 @@ class HuaweiBackend(RouterBackend):
     def _parental_probe(js: str) -> List[str]:
         """How the parental-control page builds its requests (object paths + value-free
         code around each form) – needed to add website blocking safely."""
+        return HuaweiBackend._probe(js, r"InternetGatewayDevice\.X_HW_Security\.ParentalCtrl[\w.{}]*",
+                                    ("add.cgi", "set.cgi", "del.cgi", "TemplateInst", "UrlAddress", "MACAddress",
+                                     "UrlFilterRight", "Templates.", "new Array", "DataPersistentClass"))
+
+    @staticmethod
+    def _dhcp_probe(js: str) -> List[str]:
+        """How the DHCP pages save DNS servers and fixed addresses (structure only)."""
+        return HuaweiBackend._probe(js, r"InternetGatewayDevice\.LANDevice[\w.{}]*",
+                                    ("add.cgi", "set.cgi", "del.cgi", "DNSServers", "DNSServer", "DnsServer",
+                                     "StaticAddress", "Chaddr", "Yiaddr", "IPAddress", "MinAddress",
+                                     "DHCPServerEnable", "addParameter"))
+
+    @staticmethod
+    def _probe(js: str, path_re: str, keys) -> List[str]:
         t = _unescape(js)
         out = []
-        paths = sorted(set(re.findall(r"InternetGatewayDevice\.X_HW_Security\.ParentalCtrl[\w.{}]*", t)))
+        paths = sorted(set(re.findall(path_re, t)))
         t = sanitize(t)          # values are hidden BEFORE any window is cut
         if paths:
             out.append("    paths: " + ", ".join(paths[:30]))
-        for key in ("add.cgi", "set.cgi", "del.cgi", "TemplateInst", "UrlAddress", "MACAddress",
-                    "UrlFilterRight", "Templates.", "new Array", "DataPersistentClass"):
+        for key in keys:
             for i, m in enumerate(re.finditer(re.escape(key), t)):
                 if i >= 3:
                     break
@@ -458,6 +475,8 @@ class HuaweiBackend(RouterBackend):
                 lines.append("    token: " + self.s.token_source(js))
             if "parentalctrl" in page.lower():
                 lines += self._parental_probe(js)
+            if page in DHCP_PAGES:
+                lines += self._dhcp_probe(js)
             kv = kv_counters(js)
             if kv:
                 lines.append("    key/value counters: counting")
