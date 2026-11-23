@@ -783,7 +783,9 @@ class HuaweiBackend(RouterBackend):
         if not objs:
             return None
         o = objs[0]
-        for key in (field, field.replace("X_HW_", "")):
+        # the page shows the main pool's DNS from MainDNS (= X_HW_DNSList), falling back to DNSServers
+        aliases = {"X_HW_DNSList": ("MainDNS",), "DNSList": ("MainDNS",)}
+        for key in (field, field.replace("X_HW_", "")) + aliases.get(field, ()):
             if key in o:
                 return o[key]
         return None
