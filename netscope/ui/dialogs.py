@@ -132,6 +132,8 @@ class DnsLogDialog(QDialog):
         self.table.setHorizontalHeaderLabels([tr("dns_log_time"), tr("dns_log_device"),
                                               tr("dns_log_name"), tr("dns_log_shown")])
         self.table.verticalHeader().hide()
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         hh = self.table.horizontalHeader()

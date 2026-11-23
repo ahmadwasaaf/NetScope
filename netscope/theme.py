@@ -84,6 +84,13 @@ def stylesheet(p: Palette) -> str:
     QCalendarWidget QAbstractItemView {{ background: {p.card}; selection-background-color: {p.accent};
         selection-color: white; }}
     #DevCard, #DevHeader {{ background: transparent; border: none; }}
+    QTableWidget {{ background: {p.card}; color: {p.text}; border: 1px solid {p.border}; border-radius: 8px;
+                    gridline-color: {p.border}; selection-background-color: {p.accent_soft(70)};
+                    selection-color: {p.text}; }}
+    QTableWidget::item {{ padding: 4px 6px; }}
+    QHeaderView::section {{ background: {p.chip}; color: {p.subtext}; border: none;
+                            border-bottom: 1px solid {p.border}; padding: 6px; font-weight: 600; }}
+    QTableCornerButton::section {{ background: {p.chip}; border: none; }}
     QPushButton#MoreBtn {{ background: transparent; border: none; border-radius: 16px; color: {p.text};
                            font-size: 20px; font-weight: 700; padding: 0; }}
     QPushButton#MoreBtn:hover {{ background: {p.hover}; color: {p.accent}; }}

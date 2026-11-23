@@ -15,7 +15,7 @@ FW_NAME = "NetScope DNS"
 NO_WINDOW = 0x08000000
 
 
-def _ps(script: str, timeout: int = 20) -> str:
+def _ps(script: str, timeout: int = 45) -> str:
     if sys.platform != "win32":
         return ""
     enc = base64.b64encode(script.encode("utf-16-le")).decode()
