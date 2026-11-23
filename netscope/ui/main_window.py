@@ -12,8 +12,8 @@ import ctypes
 import re
 import sys
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QGuiApplication, QIcon
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QIcon
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QInputDialog, QLabel, QLayout, QSizePolicy,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
                                QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget)
@@ -27,8 +27,10 @@ from ..poller import Poller, Task
 from ..settings import Settings, data_dir
 from ..store import UsageStore
 from ..theme import make_palette, stylesheet
-from .dialogs import DateDialog, SettingsDialog
-from .widgets import (GLYPH, CollapsibleSection, DeviceCard, Gauge, SpeedTile, Toast, ask_number, fmt_size,
+from .. import winsetup
+from .dialogs import DateDialog, SettingsDialog, npcap_version
+from .widgets import (GLYPH, CollapsibleSection, DeviceCard, Gauge, SpeedTile, Switch, Toast, ask_number, fmt_size,
+                      icon_label,
                       icon_button, icon_label)
 from .wizard import SetupWizard, caps_widget
 
@@ -111,6 +113,10 @@ class MainWindow(QMainWindow):
         self.mon_timer = QTimer(self)
         self.mon_timer.timeout.connect(self._collect_monitors)
         self.mon_timer.start(2000)
+        self.win_timer = QTimer(self)
+        self.win_timer.timeout.connect(self._read_win_state)
+        self.win_timer.start(60000)
+        QTimer.singleShot(1500, self._read_win_state)
         if not start_hidden:
             self.show()
         if not self.s.onboarded:
@@ -203,6 +209,7 @@ class MainWindow(QMainWindow):
         # ---- router (expandable)
         self.router_section = CollapsibleSection(self.tr("router"), "wifi", self.p, open_=self.s.router_open)
         self.router_section.toggled.connect(lambda o: self._remember("router_open", o))
+        self.router_section.toggled.connect(lambda o: o and self._read_win_state())
         self.router_section.anim.finished.connect(self._schedule_fit)
         self.router_box = QWidget()
         rv = QVBoxLayout(self.router_box)
@@ -219,14 +226,15 @@ class MainWindow(QMainWindow):
         rv.addWidget(works)
         self.caps_holder = QVBoxLayout()
         rv.addLayout(self.caps_holder)
-        self.dns_info = QLabel()
-        self.dns_info.setObjectName("Muted")
-        self.dns_info.setWordWrap(True)
-        self.dns_info.setTextFormat(Qt.RichText)
-        self.dns_info.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.dns_info.setMinimumWidth(10)
-        rv.addSpacing(6)
-        rv.addWidget(self.dns_info)
+        rv.addSpacing(10)
+        self.setup_title = QLabel("<b>" + self.tr("ps_title") + "</b>")
+        rv.addWidget(self.setup_title)
+        self.setup_box = QVBoxLayout()
+        self.setup_box.setSpacing(8)
+        rv.addLayout(self.setup_box)
+        self.win_state = {}
+        self._win_task = None
+        self._setup_sig = None
         self._caps_shown = None
         self.router_section.list.addWidget(self.router_box)
         col.addWidget(self.router_section)
@@ -450,18 +458,112 @@ class MainWindow(QMainWindow):
         self._refresh_devices()
 
     def _refresh_dns_info(self):
-        tr, mon = self.tr, self.dns_mon
-        if mon is None:
-            text = ""
-        elif mon.status.startswith("error:"):
-            text = tr("dns_error", err=mon.status[6:])
-        elif mon.receiving:
-            text = tr("dns_ok", d=len(mon.clients))
+        """Phone-websites checklist in the Router section (rebuilt only when something changed)."""
+        tr, mon, st = self.tr, self.dns_mon, self.win_state
+        ip = _primary_ipv4() or "?"
+        npv = npcap_version()
+        rows = []          # (ok, text, kind)
+        rows.append((bool(npv), tr("ps_npcap_ok", v=npv) if npv else tr("ps_npcap_no"), "npcap"))
+        if sys.platform == "win32":
+            if not st:
+                rows.append((None, tr("ps_checking"), ""))
+            elif st.get("ok"):
+                priv = st.get("profile") in ("Private", "DomainAuthenticated")
+                rows.append((priv, tr("ps_private_ok") if priv else tr("ps_private_no"), "private"))
+                rows.append((st.get("fw"), tr("ps_fw_ok") if st.get("fw") else tr("ps_fw_no"), "fw"))
+                dns_ok = st.get("public_dns") and not st.get("self_dns")
+                rows.append((dns_ok, tr("ps_dns_ok") if dns_ok else tr("ps_dns_no"), "dns"))
+        if mon and mon.status.startswith("error:"):
+            rows.append((False, tr("ps_helper_off", err=mon.status[6:]), ""))
+        elif mon and mon.receiving:
+            rows.append((True, tr("ps_router_ok", d=len(mon.clients)), ""))
         else:
-            text = "<b>" + tr("dns_title") + "</b><br>" + \
-                tr("dns_setup", ip=_primary_ipv4() or "?", gw=self.s.host)
-        self.dns_info.setText(text)
-        self.dns_info.setVisible(bool(text))
+            rows.append((False, tr("ps_router_no", ip=ip, gw=self.s.host), ""))
+        sig = (tuple(rows), bool(self._win_task))
+        if sig == self._setup_sig:
+            return
+        self._setup_sig = sig
+        while self.setup_box.count():
+            it = self.setup_box.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        for ok, text, kind in rows:
+            self.setup_box.addWidget(self._setup_row(ok, text, kind))
+        self._schedule_fit()
+
+    def _setup_row(self, ok, text, kind) -> QWidget:
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(10)
+        icon = "check" if ok else ("cancel" if ok is False else "refresh")
+        ic = icon_label(icon if icon in GLYPH else "check", 12, color=self.p.success if ok else
+                        (self.p.warn if ok is False else self.p.subtext))
+        ic.setFixedWidth(16)
+        h.addWidget(ic, 0, Qt.AlignTop)
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setTextFormat(Qt.RichText)
+        lbl.setObjectName("CapOn" if ok else "Muted")
+        h.addWidget(lbl, 1)
+        busy = bool(self._win_task)
+        if kind == "npcap":
+            b = QPushButton(self.tr("npcap_download"))
+            b.setObjectName("Ghost")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://npcap.com/#download")))
+            h.addWidget(b, 0, Qt.AlignVCenter)
+        elif kind == "private":
+            sw = Switch(self.p, bool(ok))
+            sw.setEnabled(not busy)
+            sw.toggled.connect(lambda on: self._win_action(
+                lambda: winsetup.set_private(self.win_state.get("if", 0), on)))
+            h.addWidget(sw, 0, Qt.AlignVCenter)
+        elif kind in ("fw", "dns") and not ok:
+            b = QPushButton(self.tr("ps_fw_btn" if kind == "fw" else "ps_dns_btn"))
+            b.setObjectName("Primary")
+            b.setCursor(Qt.PointingHandCursor)
+            b.setEnabled(not busy)
+            b.clicked.connect(lambda: self._win_action(
+                winsetup.allow_firewall if kind == "fw" else winsetup.use_public_dns))
+            h.addWidget(b, 0, Qt.AlignVCenter)
+        return w
+
+    def _read_win_state(self):
+        if sys.platform != "win32" or self._win_task:
+            return
+        task = Task(winsetup.read_state, _primary_ipv4())
+        self._win_read = task
+
+        def got(st):
+            self.win_state = st or {"ok": False}
+            self._refresh_dns_info()
+        task.done.connect(got)
+        task.start()
+
+    def _win_action(self, fn):
+        if self._win_task:
+            return
+        self.toast.show_message(self.tr("ps_admin"), ms=6000)
+        self._win_task = Task(fn)
+
+        def finished(code):
+            self._win_task = None
+            if code == 0:
+                self.toast.show_message(self.tr("ps_done"))
+            elif code == -1223:
+                self.toast.show_message(self.tr("ps_cancel"))
+            else:
+                self.toast.show_message(self.tr("ps_failed"), error=True)
+            self._setup_sig = None
+            self._read_win_state()
+            if code == 0 and self.dns_mon:          # make sure the helper (re)binds after a change
+                self._start_dns()
+        self._win_task.done.connect(finished)
+        self._win_task.failed.connect(lambda e: finished(-1))
+        self._win_task.start()
+        self._setup_sig = None
+        self._refresh_dns_info()
 
     def _toggle_offline(self):
         self._remember("show_offline", not self.s.show_offline)
@@ -716,8 +818,7 @@ class MainWindow(QMainWindow):
         if self.dns_mon:
             self.dns_mon.stop()
         me = _primary_ipv4()
-        upstream = self.s.host if self.s.backend != "demo" else ".".join(me.split(".")[:3] + ["1"])
-        self.dns_mon = DnsMonitor(upstream, exclude={me, "127.0.0.1"})
+        self.dns_mon = DnsMonitor(None, exclude={me, "127.0.0.1"})      # public resolvers, UDP + TCP
         self.dns_mon.start()
 
     def _collect_monitors(self):

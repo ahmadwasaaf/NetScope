@@ -6,7 +6,7 @@ from PySide6.QtCore import (Property, QEasingCurve, QEvent, QPointF, QPropertyAn
                             Qt, QTimer, Signal)
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtCore import QLocale
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QLayout, QScrollArea,
+from PySide6.QtWidgets import (QAbstractButton, QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QLayout, QScrollArea,
                                QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QSizePolicy, QToolButton,
                                QVBoxLayout, QWidget)
@@ -992,3 +992,58 @@ def ask_number(parent, title, label, value, decimals=2, hint="", maximum=100000.
     spin.setFocus()
     ok = bool(dlg.exec())
     return spin.value(), ok
+
+
+# ---------------------------------------------------------------------------- toggle switch
+class Switch(QAbstractButton):
+    """Small animated on/off switch."""
+
+    def __init__(self, palette: Palette, checked: bool = False):
+        super().__init__()
+        self.p = palette
+        self.setCheckable(True)
+        self.setChecked(checked)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedSize(44, 24)
+        self._pos = 1.0 if checked else 0.0
+        self.anim = QVariantAnimation(self)
+        self.anim.setDuration(160)
+        self.anim.setEasingCurve(QEasingCurve.OutCubic)
+        self.anim.valueChanged.connect(self._set_pos)
+        self.toggled.connect(self._animate)
+
+    def _set_pos(self, v):
+        self._pos = float(v)
+        self.update()
+
+    def _animate(self, on):
+        self.anim.stop()
+        self.anim.setStartValue(self._pos)
+        self.anim.setEndValue(1.0 if on else 0.0)
+        self.anim.start()
+
+    def set_quiet(self, on: bool):
+        """Change state without emitting toggled."""
+        self.blockSignals(True)
+        self.setChecked(on)
+        self.blockSignals(False)
+        self.anim.stop()
+        self._set_pos(1.0 if on else 0.0)
+
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        off, on = QColor(self.p.track), QColor(self.p.accent)
+        k = self._pos
+        track = QColor(int(off.red() + (on.red() - off.red()) * k), int(off.green() + (on.green() - off.green()) * k),
+                       int(off.blue() + (on.blue() - off.blue()) * k))
+        if not self.isEnabled():
+            track.setAlpha(110)
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(track)
+        qp.drawRoundedRect(QRectF(0, 0, 44, 24), 12, 12)
+        qp.setBrush(QColor("#FFFFFF"))
+        x = 3 + k * 20
+        if self.layoutDirection() == Qt.RightToLeft:
+            x = 44 - 3 - 18 - k * 20
+        qp.drawEllipse(QRectF(x, 3, 18, 18))
