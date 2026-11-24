@@ -272,6 +272,27 @@ class SettingsDialog(QDialog):
         self.autostart = QCheckBox(tr("autostart"))
         self.autostart.setChecked(self.s.autostart)
         gf.addRow("", self.autostart)
+        shot = QFrame()
+        shot.setObjectName("SettingRow")
+        sh = QHBoxLayout(shot)
+        sh.setContentsMargins(0, 10, 0, 4)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        st = QLabel(tr("shot_setting"))
+        st.setStyleSheet("font-weight: 700;")
+        col.addWidget(st)
+        sd = QLabel(tr("shot_setting_hint"))
+        sd.setObjectName("Muted")
+        sd.setWordWrap(True)
+        col.addWidget(sd)
+        sh.addLayout(col, 1)
+        from .widgets import Switch
+        pal = getattr(parent, "p", None)
+        self.shot_switch = Switch(pal, self.s.screenshot_enabled) if pal else QCheckBox()
+        if not pal:
+            self.shot_switch.setChecked(self.s.screenshot_enabled)
+        sh.addWidget(self.shot_switch, 0, Qt.AlignVCenter)
+        gf.addRow(shot)
         tabs.addTab(g, tr("general"))
 
         # ---------------- Router: saved routers + options of the one in use
@@ -424,5 +445,6 @@ class SettingsDialog(QDialog):
         s.theme = self.theme.currentData()
         s.quota_gb = self.quota.value()
         s.autostart = self.autostart.isChecked()
+        s.screenshot_enabled = self.shot_switch.isChecked()
         s.refresh_sec = self.refresh.value()
         return s

@@ -91,6 +91,10 @@ def stylesheet(p: Palette) -> str:
     QHeaderView::section {{ background: {p.chip}; color: {p.subtext}; border: none;
                             border-bottom: 1px solid {p.border}; padding: 6px; font-weight: 600; }}
     QTableCornerButton::section {{ background: {p.chip}; border: none; }}
+    QPushButton#ShotRow {{ background: transparent; border: none; border-radius: 8px; text-align: left; }}
+    QPushButton#ShotRow:hover {{ background: {p.hover}; }}
+    #ShotScale {{ color: {p.accent}; font-weight: 700; min-width: 26px; }}
+    #SettingRow {{ border-top: 1px solid {p.border}; }}
     QPushButton#MoreBtn {{ background: transparent; border: none; border-radius: 16px; color: {p.text};
                            font-size: 20px; font-weight: 700; padding: 0; }}
     QPushButton#MoreBtn:hover {{ background: {p.hover}; color: {p.accent}; }}

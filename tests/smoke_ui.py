@@ -137,6 +137,20 @@ def run(tag, **settings):
             if d2.table.rowCount() != 5:
                 errors.append(f"DNS log shows {d2.table.rowCount()} rows")
             d2.reject()
+            # full screenshot, re-drawn at 2x, whole scrolling content, no scroll bars
+            from netscope.ui.shot import expand_inner_scrolls, render_window, restore
+            undo = expand_inner_scrolls(win)
+            win._fit_body()
+            app.processEvents()
+            img = render_window(win, 2, win.p.window,
+                                [(win.scroll, win.scroll_body), (win.scroll2, win.scroll_body2)])
+            restore(undo)
+            print(f"screenshot 2x: {img.width()}x{img.height()} window {win.width()}x{win.height()}", flush=True)
+            if img.width() != win.width() * 2 or img.height() <= win.height() * 2:
+                errors.append(f"screenshot size wrong: {img.width()}x{img.height()}")
+            small = img.scaled(img.width() // 4, img.height() // 4)
+            small.save(os.path.join(OUT, "shot_full.jpg"), "JPG", 70)
+            img.copy(0, 0, 1200, 900).save(os.path.join(OUT, "shot_2x_crop.jpg"), "JPG", 80)
         win.quit_app()
 
     timers = []

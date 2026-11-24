@@ -9,7 +9,7 @@ from .base import Cap
 TESTED = {
     # Huawei DN8245V-56 (WE / TE Data VDSL) - confirmed Nov 2026
     ("huawei", "DN8245V-56"): {Cap.DEVICE_LIST, Cap.TOTAL_USAGE, Cap.LIVE_SPEED, Cap.LINE_RATE,
-                               Cap.DEVICE_BLOCK, "lan_dns"},
+                               Cap.DEVICE_BLOCK, "lan_dns", "lan_dns_v6", "catch_up"},
 }
 
 

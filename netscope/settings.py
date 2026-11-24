@@ -46,6 +46,7 @@ class Settings:
     refresh_sec: int = 10
     devices_open: bool = True
     sites_open: bool = False
+    screenshot_enabled: bool = True   # right-click -> Screenshot
     win_w: int = 0                # window size the user chose (0 = automatic)
     win_h: int = 0
     routers: list = field(default_factory=list)     # saved routers (see profiles.py)

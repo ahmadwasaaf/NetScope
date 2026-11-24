@@ -60,7 +60,19 @@ SYSTEM_SITES = {
     "facebook-hardware.com", "scorecardresearch.com", "sentry.io", "bugsnag.com", "mixpanel.com",
     "amplitude.com", "segment.io", "newrelic.com", "nr-data.net", "adcolony.com", "vungle.com",
     "chartboost.com", "pangle.io", "pangleglobal.com", "bytedance-ads.com",
+    # security apps (updates, cloud scans)
+    "kaspersky.com", "kaspersky-labs.com", "kaspersky.ru", "kas-labs.com", "avast.com", "avg.com",
+    "avcdn.net", "norton.com", "nortonlifelock.com", "symantec.com", "symcd.com", "mcafee.com",
+    "mcafee-cloud.com", "eset.com", "eset.systems", "bitdefender.com", "bitdefender.net",
+    "malwarebytes.com", "avira.com", "sophos.com", "trendmicro.com", "drweb.com",
+    # Samsung assistant / Galaxy AI
+    "bixby.com", "bixbyllm.com", "samsungbixby.com", "galaxyai.com",
 }
+
+# country versions of the same site (google.com.eg, amazon.eg …) are shown as one
+BRANDS = {"google", "youtube", "amazon", "yahoo", "bing", "ebay", "apple", "microsoft", "netflix",
+          "samsung", "xiaomi", "booking", "olx", "jumia", "noon", "aliexpress", "ikea", "zara",
+          "hm", "nike", "adidas", "shein", "temu", "uber", "careem", "talabat", "spotify"}
 
 
 HOST_ALIASES = [
@@ -97,6 +109,9 @@ def site_of(host: str):
         if rx.search(h):
             return site
     b = base_domain(h)
+    brand = b.split(".")[0]
+    if brand in BRANDS and b != f"{brand}.com":
+        b = f"{brand}.com"
     return ALIASES.get(b, b)
 
 

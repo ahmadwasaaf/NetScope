@@ -22,6 +22,7 @@ GLYPH = {
     "tablet": "", "other": "", "block": "", "router": "",
     "arrow_down": "", "arrow_up": "", "check": "", "cancel": "",
     "search": "", "pie": "", "wifi": "", "alarm": "",
+    "camera": "",
 }
 
 

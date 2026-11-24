@@ -13,11 +13,14 @@ import re
 import sys
 import time
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from pathlib import Path
+
+from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QCursor, QDesktopServices, QGuiApplication, QIcon
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QInputDialog, QLabel, QLayout, QSizePolicy,
-                               QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
-                               QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QFrame, QHBoxLayout, QInputDialog, QLabel,
+                               QLayout, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
+                               QPushButton, QScrollArea, QSizePolicy, QSystemTrayIcon, QTextEdit,
+                               QVBoxLayout, QWidget)
 
 from .. import APP_NAME, APP_VERSION
 from ..backends import Cap, Snapshot, clean_domain, create_backend, detect
@@ -100,6 +103,7 @@ class MainWindow(QMainWindow):
         self._sys_open: set = set()            # cards whose "System services" row is open
         self.active_key = None                 # the one card the user picked last (highlighted)
         self._v6_macs, self._v6_wait, self._v6_at = {}, {}, 0.0
+        QApplication.instance().installEventFilter(self)          # right-click -> Screenshot
         self.user_closed: set = set()          # devices the user closed by hand (not re-opened automatically)
         self.cards = {}
         self._quitting = False
@@ -217,6 +221,7 @@ class MainWindow(QMainWindow):
 
         def column():
             sc = QScrollArea()
+            sc.setProperty("page", True)             # screenshots draw its whole content
             sc.setWidgetResizable(True)
             sc.setFrameShape(QFrame.NoFrame)
             sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # content follows the window width
@@ -316,6 +321,59 @@ class MainWindow(QMainWindow):
         self.dev_cards = {}
         self.toast = Toast(root)
         self._refresh_view()
+
+    # ---------------------------------------------------------------- screenshots
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.ContextMenu and self.s.screenshot_enabled and isinstance(obj, QWidget):
+            w = obj
+            while w is not None:                      # widgets with their own right-click menu
+                if w.contextMenuPolicy() == Qt.CustomContextMenu or isinstance(
+                        w, (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit, QMenu)):
+                    return False
+                if w.isWindow():
+                    break
+                w = w.parentWidget()
+            top = obj.window()
+            if top is None or isinstance(top, QMenu):
+                return False
+            m = self._menu()
+            self._add(m, self.tr("shot_menu"), lambda: self._screenshot(top))
+            m.exec(e.globalPos())
+            return True
+        return super().eventFilter(obj, e)
+
+    def _shot_action(self, menu):
+        if self.s.screenshot_enabled:
+            menu.addSeparator()
+            self._add(menu, self.tr("shot_menu"), lambda: self._screenshot(self))
+
+    def _screenshot(self, top):
+        from .shot import ShotDialog, expand_inner_scrolls, render_window, restore, save_png
+        from .dialogs import desktop_dir
+        dlg = ShotDialog(self.tr, top.width(), top)
+        if not dlg.exec() or not dlg.scale:
+            return
+        QApplication.processEvents()
+        if top is self:
+            undo = expand_inner_scrolls(self)
+            self._fit_body()
+            QApplication.processEvents()
+            try:
+                img = render_window(self, dlg.scale, self.p.window,
+                                    [(self.scroll, self.scroll_body), (self.scroll2, self.scroll_body2)])
+            finally:
+                restore(undo)
+                self._schedule_fit()
+        else:
+            img = render_window(top, dlg.scale, self.p.card)
+        try:
+            path = save_png(img, Path(desktop_dir()))
+        except OSError as ex:
+            self.toast.show_message(f"{self.tr('ps_failed')}\n{ex}", error=True)
+            return
+        self.toast.show_message(self.tr("shot_saved", name=path.name, w=img.width(), h=img.height()),
+                                self.tr("shot_open"),
+                                lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))), ms=12000)
 
     WIDE_AT = 1000          # px: from this width on, devices & websites get their own column
 
@@ -553,10 +611,12 @@ class MainWindow(QMainWindow):
         lan = self.lan_state
         if mon and mon.status.startswith("error:"):
             rows.append((False, tr("ps_helper_off", err=mon.status[6:]), ""))
+        tested = tested_caps(self.s.backend, self.snap.router_name)
+        mark = lambda key: f"  <span style='font-size:11px'>{tr('cap_tested')}</span>" if key in tested else ""
         if lan.get("active"):
-            rows.append((True, tr("ps_router_set", ip=ip), "router_undo"))
+            rows.append((True, tr("ps_router_set", ip=ip) + mark("lan_dns"), "router_undo"))
             if lan.get("v6_active"):
-                rows.append((True, tr("ps_v6_ok"), ""))
+                rows.append((True, tr("ps_v6_ok") + mark("lan_dns_v6"), ""))
             elif st.get("v6") and "v6_type" in lan:
                 rows.append((False, tr("ps_v6_no"), "router_v6"))
             if mon and mon.receiving:
@@ -1150,6 +1210,7 @@ class MainWindow(QMainWindow):
         self._add(m, self.tr("rename"), lambda: self._rename(mac))
         self._add(m, self.tr("copy_ip"), lambda: QGuiApplication.clipboard().setText(meta[1]))
         self._add(m, self.tr("copy_mac"), lambda: QGuiApplication.clipboard().setText(mac.upper()))
+        self._shot_action(m)
         m.exec(pos)
 
     def _confirm_cut(self, mac, name):
@@ -1170,6 +1231,10 @@ class MainWindow(QMainWindow):
 
     def _site_menu(self, domain, pos):
         if domain == SYSTEM_KEY:
+            if self.s.screenshot_enabled:
+                m = self._menu()
+                self._shot_action(m)
+                m.exec(pos)
             return
         try:
             clean_domain(domain)
@@ -1182,6 +1247,7 @@ class MainWindow(QMainWindow):
             self._add(m, self.tr("unblock_site"), lambda: self._do("unblock_domain", domain, domain), can)
         else:
             self._add(m, self.tr("block_site"), lambda: self._do("block_domain", domain, domain), can)
+        self._shot_action(m)
         m.exec(pos)
 
     def _add_site(self):
