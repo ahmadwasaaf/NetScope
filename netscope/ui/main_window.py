@@ -355,15 +355,20 @@ class MainWindow(QMainWindow):
             return
         QApplication.processEvents()
         if top is self:
-            undo = expand_inner_scrolls(self)
+            # lists that scroll inside a card are laid out in full for the picture
+            # (fit_inner decides that, so it must not cap them again while capturing)
+            keep = DeviceCard.VISIBLE_ITEMS
+            DeviceCard.VISIBLE_ITEMS = 10 ** 6
+            self._fit_body()
+            QApplication.processEvents()
             self._fit_body()
             QApplication.processEvents()
             try:
                 img = render_window(self, dlg.scale, self.p.window,
                                     [(self.scroll, self.scroll_body), (self.scroll2, self.scroll_body2)])
             finally:
-                restore(undo)
-                self._schedule_fit()
+                DeviceCard.VISIBLE_ITEMS = keep
+                self._fit_body()
         else:
             img = render_window(top, dlg.scale, self.p.card)
         try:
