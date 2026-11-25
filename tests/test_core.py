@@ -254,7 +254,58 @@ def test_dns_helper():
     mon.stop()
 
 
-for t in (test_profiles, test_lan_dns, test_dns_helper):
+def test_wan_counters():
+    """Usage from router counters: no fake jumps when one WAN connection resets or appears."""
+    import netscope.backends.huawei as H
+    from netscope.backends.base import Snapshot
+
+    def page(conns):
+        objs = ",".join(f'new WANStats("InternetGatewayDevice.WANDevice.{i}.Stats","0","{tx}","0","0","0","{rx}","0","0")'
+                        for i, (rx, tx) in conns.items())
+        return ("function WANStats(domain, txPakets, txBytes, txErros, txDiscarded, rxPackets, rxBytes, rxErros, "
+                "rxDiscarded) {} var s = new Array(" + objs + ",null);")
+
+    class S:
+        host = "192.168.1.1"
+        js = ""
+
+        def get(self, *a, **k):
+            return self.js
+
+    b = H.HuaweiBackend.__new__(H.HuaweiBackend)
+    b.s, b.wan_page, b.wan_context, b.t_last, b.state_tag = S(), "w.asp", "", None, "r_wan"
+    b._cache_line = (41000, 5100)
+    t = [1000.0]
+    H.time.monotonic = lambda: t[0]
+    MB = 1024 * 1024
+
+    def poll(conns, dt=60):
+        t[0] += dt
+        b.s.js = page(conns)
+        snap = Snapshot()
+        b._poll_wan(snap)
+        return snap
+
+    # internet WAN at 3 GB, TV/VoIP WAN at 1.5 GB
+    poll({1: (3000 * MB, 200 * MB), 7: (1500 * MB, 50 * MB)})
+    check("normal minute counted", poll({1: (3100 * MB, 205 * MB), 7: (1500 * MB, 50 * MB)}).wan_delta == 105 * MB)
+    check("one connection resets -> no fake jump",
+          poll({1: (3110 * MB, 206 * MB), 7: (1 * MB, 0)}).wan_delta == 11 * MB + 1 * MB)
+    check("new connection appears -> its old counter not counted",
+          poll({1: (3120 * MB, 207 * MB), 7: (2 * MB, 0), 9: (900 * MB, 9 * MB)}).wan_delta == 11 * MB + 1 * MB)
+    check("impossible 1.5 GB in one minute rejected",
+          poll({1: (4700 * MB, 207 * MB), 7: (2 * MB, 0), 9: (900 * MB, 9 * MB)}).wan_delta == 0)
+    check("rejection logged", "rejected" in (data_dir() / "counter_events.log").read_text())
+    # restart after 10 hours: real usage since then is a catch-up
+    b._wan_prev, b.t_last = None, None
+    st = b._state_get("wan_counters")
+    st["t"] = st["t"] - 36000
+    b._state_set("wan_counters", st)
+    snap = poll({1: (4700 * MB + 2000 * MB, 300 * MB), 7: (2 * MB, 0), 9: (900 * MB, 9 * MB)})
+    check("catch-up after a gap = usage since last save", snap.catch_up_bytes == 2000 * MB + 93 * MB)
+
+
+for t in (test_profiles, test_lan_dns, test_dns_helper, test_wan_counters):
     try:
         t()
     except Exception:

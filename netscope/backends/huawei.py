@@ -138,6 +138,20 @@ def kv_counters(js: str):
     return (rx, tx) if (rx or tx) else None
 
 
+def wan_counter_map(js: str, context: str = "") -> Dict[str, tuple]:
+    """{connection: (rx, tx)} of the first WAN counter set that is counting - one entry per
+    WAN connection, so a reset or a connection coming up is handled per connection."""
+    for _, rx, tx, objs in counter_sets(context + "\n" + js if context else js):
+        out = {}
+        for i, o in enumerate(objs):
+            key = _field(o, "domain", "Domain") or f"#{i}"
+            out[key] = (_num(o, rx), _num(o, tx))
+        if any(a or b for a, b in out.values()):
+            return out
+    kv = kv_counters(js)
+    return {"kv": kv} if kv else {}
+
+
 def wan_counters(js: str, context: str = ""):
     """(rx, tx) from the first WAN counter set that is actually counting, else None.
     `context` = the page that loaded this one (it may hold the object definitions)."""
@@ -556,32 +570,68 @@ class HuaweiBackend(RouterBackend):
             found[clean_mac(m.group(3))] = m.group(1)
         return found
 
+    # ---- WAN counters -> usage. Counted per WAN connection: when one connection resets or
+    # appears, only that connection's own (small) counter counts - never the sum of all of
+    # them. A jump bigger than the line can physically carry is rejected and logged.
+    def _max_bytes(self, seconds: float) -> float:
+        down, up = getattr(self, "_cache_line", (None, None)) or (None, None)
+        kbps = (down or 0) + (up or 0) or 300_000           # unknown line: allow 300 Mbps
+        return kbps * 1000 / 8 * max(seconds, 1) * 1.3 + 2 * 1024 * 1024
+
+    def _log_counter(self, what: str, **kv):
+        from ..settings import data_dir
+        try:
+            with open(data_dir() / "counter_events.log", "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {what} " +
+                        " ".join(f"{k}={v}" for k, v in kv.items()) + "\n")
+        except OSError:
+            pass
+
+    def _poll_wan(self, snap):
+        cur = wan_counter_map(self.s.get(self.wan_page, expect="Bytes"), self.wan_context)
+        if not cur:
+            return
+        now_m, now_t = time.monotonic(), time.time()
+        prev = getattr(self, "_wan_prev", None)
+        first = prev is None
+        if first:                                   # resume from the counters saved last time
+            saved = self._state_get("wan_counters") or {}
+            prev = {k: tuple(v) for k, v in (saved.get("per") or {}).items()}
+            since = now_t - float(saved.get("t", now_t))
+        else:
+            since = now_m - self.t_last if self.t_last else 0
+        d_rx = d_tx = 0
+        for key, (rx, tx) in cur.items():
+            if key not in prev:                     # connection seen for the first time
+                continue
+            prx, ptx = prev[key]
+            d_rx += rx - prx if rx >= prx else (rx + 2 ** 32 - prx if 2 ** 31 < prx < 2 ** 32 else rx)
+            d_tx += tx - ptx if tx >= ptx else (tx + 2 ** 32 - ptx if 2 ** 31 < ptx < 2 ** 32 else tx)
+        self._wan_prev = cur
+        total = d_rx + d_tx
+        if prev and total > self._max_bytes(since):
+            self._log_counter("rejected", bytes=total, seconds=int(since), first=first,
+                              conns=len(cur), changed=sum(1 for k in cur if k in prev and cur[k] != prev[k]))
+            d_rx = d_tx = total = 0
+        if first:
+            snap.catch_up_bytes = total if prev else 0
+            snap.wan_delta = snap.catch_up_bytes
+        else:
+            snap.wan_delta = total
+            if since > 0:
+                snap.down_bps, snap.up_bps = d_rx / since, d_tx / since
+        if first or now_m - getattr(self, "_saved_at", 0) > 30:
+            self._state_set("wan_counters", {"per": {k: list(v) for k, v in cur.items()}, "t": now_t})
+            self._saved_at = now_m
+        self.t_last = now_m
+
     def poll(self) -> Snapshot:
         if not self.capabilities:
             self.connect()
         snap = Snapshot(router_name=self.router_name)
         if self.wan_page:
             try:
-                rx, tx = wan_counters(self.s.get(self.wan_page, expect="Bytes"), self.wan_context) or (None, None)
-                if rx is not None:
-                    now = time.monotonic()
-                    first = "rx" not in self.delta.prev
-                    if first:                     # resume from the counters saved last time
-                        saved = self._state_get("wan_counters") or {}
-                        if "rx" in saved and "tx" in saved:
-                            self.delta.prev.update(rx=int(saved["rx"]), tx=int(saved["tx"]))
-                    d_rx, d_tx = self.delta("rx", rx, wrap32=True), self.delta("tx", tx, wrap32=True)
-                    if first and "rx" in self.delta.prev:
-                        snap.catch_up_bytes = d_rx + d_tx
-                        d_rx = d_tx = 0           # counted as catch-up, not as live speed
-                    snap.wan_delta = d_rx + d_tx + snap.catch_up_bytes
-                    if time.monotonic() - getattr(self, "_saved_at", 0) > 30 or first:
-                        self._state_set("wan_counters", {"rx": rx, "tx": tx, "t": time.time()})
-                        self._saved_at = time.monotonic()
-                    if self.t_last:
-                        dt = now - self.t_last
-                        snap.down_bps, snap.up_bps = d_rx / dt, d_tx / dt
-                    self.t_last = now
+                self._poll_wan(snap)
             except Exception:
                 pass
         js = self.s.get("html/bbsp/common/GetLanUserDevInfo.asp", post=True, expect="USERDevice")
